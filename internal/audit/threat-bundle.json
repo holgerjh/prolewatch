@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "bundle_version": "2026.08.16.1",
+  "reviewed_at": "2026-08-16T00:00:00Z",
+  "entries": [
+    {
+      "id": "aur-2026-atomic-lockfile",
+      "kind": "ecosystem_package",
+      "ecosystem": "npm",
+      "value": "atomic-lockfile",
+      "disposition": "hard_block",
+      "source_url": "https://www.sonatype.com/blog/atomic-arch-npm-campaign-adds-malicious-dependency",
+      "first_seen": "2026-06-11"
+    },
+    {
+      "id": "aur-2026-js-digest",
+      "kind": "ecosystem_package",
+      "ecosystem": "npm",
+      "value": "js-digest",
+      "disposition": "hard_block",
+      "source_url": "https://www.sonatype.com/blog/atomic-arch-npm-campaign-adds-malicious-dependency",
+      "first_seen": "2026-06-12"
+    },
+    {
+      "id": "aur-2026-lockfile-js",
+      "kind": "ecosystem_package",
+      "ecosystem": "npm",
+      "value": "lockfile-js",
+      "disposition": "hard_block",
+      "source_url": "https://www.sonatype.com/blog/atomic-arch-npm-campaign-adds-malicious-dependency",
+      "first_seen": "2026-06-12"
+    }
+  ]
+}

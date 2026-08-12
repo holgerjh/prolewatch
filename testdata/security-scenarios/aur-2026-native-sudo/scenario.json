@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "aur-2026-native-sudo",
+  "title": "Native validator invoked through sudo",
+  "incident": "July 2026 openconnect-sso validator report",
+  "reference": "docs/aur-threat-model.md#what-has-happened",
+  "claim": "mitigated",
+  "phase": "pre",
+  "expected": {
+    "decision": "block",
+    "approval_eligible": false,
+    "coverage_complete": true,
+    "exact_rule_ids": false,
+    "required_findings": [
+      {"rule_id": "repository-native-binary", "severity": "high", "hard_block": false},
+      {"rule_id": "shell-privilege-command", "severity": "critical", "hard_block": true}
+    ]
+  },
+  "generated_files": [
+    {"path": "validator", "kind": "minimal-elf"}
+  ]
+}

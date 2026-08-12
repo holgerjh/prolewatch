@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "baseline-safe",
+  "title": "Benign local-source package",
+  "incident": "Control case",
+  "reference": "docs/security-scenarios.md#scenario-map",
+  "claim": "control",
+  "phase": "pre",
+  "expected": {
+    "decision": "allow",
+    "approval_eligible": false,
+    "coverage_complete": true,
+    "exact_rule_ids": true,
+    "required_findings": []
+  },
+  "generated_files": []
+}

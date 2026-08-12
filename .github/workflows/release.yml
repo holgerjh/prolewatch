@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install sandbox test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap libarchive-tools
+      - name: Verify release tag and tree
+        run: |
+          test "$(go run ./cmd/prolewatch version)" = "prolewatch ${GITHUB_REF_NAME#v}"
+          test -z "$(git status --porcelain)"
+      - run: make release-check
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build deterministic binaries
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          PROLEWATCH_BUILD_DIR: build/linux-${{ matrix.arch }}
+        run: ./scripts/build.sh
+      - name: Generate CycloneDX SBOMs
+        run: ./scripts/generate-sbom.sh '${{ matrix.arch }}' 'build/linux-${{ matrix.arch }}' dist
+      - name: Package release
+        run: ./scripts/package-release.sh '${{ github.ref_name }}' '${{ matrix.arch }}' 'build/linux-${{ matrix.arch }}' dist
+      - name: Verify release artifacts
+        run: |
+          for name in prolewatch prolewatch-makepkg prolewatch-gpg provider-dispatch prolewatch-net prolewatch-build-dispatch; do
+            test -s "dist/${name}-linux-${{ matrix.arch }}"
+            test -s "dist/${name}-linux-${{ matrix.arch }}.cdx.json"
+          done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/*
+      - name: Attest prolewatch SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/prolewatch-linux-${{ matrix.arch }}
+          sbom-path: dist/prolewatch-linux-${{ matrix.arch }}.cdx.json
+      - name: Attest makepkg wrapper SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/prolewatch-makepkg-linux-${{ matrix.arch }}
+          sbom-path: dist/prolewatch-makepkg-linux-${{ matrix.arch }}.cdx.json
+      - name: Attest GPG wrapper SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}
+          sbom-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}.cdx.json
+      - name: Attest provider dispatcher SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/provider-dispatch-linux-${{ matrix.arch }}
+          sbom-path: dist/provider-dispatch-linux-${{ matrix.arch }}.cdx.json
+      - name: Attest network broker SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/prolewatch-net-linux-${{ matrix.arch }}
+          sbom-path: dist/prolewatch-net-linux-${{ matrix.arch }}.cdx.json
+      - name: Attest build dispatcher SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}
+          sbom-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Attest checksum manifest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/SHA256SUMS
+      - name: Publish verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ github.ref_name }}' dist/* --verify-tag --generate-notes

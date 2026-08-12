@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "aur-2026-native-binary",
+  "title": "Native binary committed with package inputs",
+  "incident": "July 2026 native ELF reports",
+  "reference": "docs/aur-threat-model.md#what-has-happened",
+  "claim": "partially-mitigated",
+  "phase": "pre",
+  "expected": {
+    "decision": "block",
+    "approval_eligible": true,
+    "coverage_complete": true,
+    "exact_rule_ids": true,
+    "required_findings": [
+      {"rule_id": "repository-native-binary", "severity": "high", "hard_block": false}
+    ]
+  },
+  "generated_files": [
+    {"path": "payload", "kind": "minimal-elf"}
+  ]
+}
