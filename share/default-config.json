@@ -1,0 +1,67 @@
+{
+  "provider": "codex",
+  "providers": {
+    "codex": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "anthropic": {
+      "model": "sonnet",
+      "effort": "high"
+    }
+  },
+  "review": {
+    "mode": "ai",
+    "minimum_confidence": "high",
+    "timeout_seconds": 180,
+    "kill_grace_seconds": 5,
+    "batch_bytes": 768000
+  },
+  "limits": {
+    "max_dispatch_bytes": 20971520,
+    "max_files": 200000,
+    "max_total_input_bytes": 17179869184,
+    "max_archives": 1024,
+    "max_archive_entries": 100000,
+    "max_archive_unpacked_bytes": 2147483648,
+    "max_archive_depth": 4,
+    "max_text_per_file": 4194304,
+    "max_selected_text_bytes": 16777216,
+    "binary_strings_bytes": 131072,
+    "max_findings": 10000,
+    "scan_timeout_seconds": 300
+  },
+  "build": {
+    "memory_bytes": 8589934592,
+    "cpu_count": 4,
+    "tasks_max": 512,
+    "timeout_seconds": 7200,
+    "workspace_bytes": 17179869184,
+    "workspace_files": 500000,
+    "output_bytes": 33554432,
+    "disk_reserve_bytes": 2147483648,
+    "clean_root_prepare_timeout_seconds": 900,
+    "clean_root_bytes": 34359738368,
+    "clean_root_cache_bytes": 17179869184,
+    "clean_root_max_prepared": 2
+  },
+  "network": {
+    "auto_enable_known_tools": true,
+    "max_connections": 32,
+    "connect_timeout_seconds": 15,
+    "idle_timeout_seconds": 60,
+    "max_transfer_bytes": 8589934592
+  },
+  "sandbox": {
+    "read_only_paths": []
+  },
+  "vendor": {
+    "scan_depth": 0
+  },
+  "overrides": {
+    "allow_unsafe": false
+  },
+  "terminal": {
+    "style": "brand"
+  }
+}

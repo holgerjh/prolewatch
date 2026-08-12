@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "aur-2026-atomic-arch",
+  "title": "Known Atomic Arch npm and Bun indicators",
+  "incident": "June 2026 Atomic Arch campaign",
+  "reference": "docs/aur-threat-model.md#what-has-happened",
+  "claim": "mitigated",
+  "phase": "pre",
+  "expected": {
+    "decision": "block",
+    "approval_eligible": false,
+    "coverage_complete": true,
+    "exact_rule_ids": false,
+    "required_findings": [
+      {"rule_id": "threat-aur-2026-atomic-lockfile", "severity": "critical", "hard_block": true},
+      {"rule_id": "threat-aur-2026-js-digest", "severity": "critical", "hard_block": true},
+      {"rule_id": "shell-ecosystem-install", "severity": "critical", "hard_block": true}
+    ]
+  },
+  "generated_files": []
+}

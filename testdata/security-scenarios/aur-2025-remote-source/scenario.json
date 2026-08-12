@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "aur-2025-remote-source",
+  "title": "Remote script sourced through process substitution",
+  "incident": "Representative 2025 remote second-stage delivery",
+  "reference": "docs/aur-threat-model.md#what-has-happened",
+  "claim": "mitigated",
+  "phase": "pre",
+  "expected": {
+    "decision": "block",
+    "approval_eligible": false,
+    "coverage_complete": true,
+    "exact_rule_ids": false,
+    "required_findings": [
+      {"rule_id": "remote-source", "severity": "critical", "hard_block": true},
+      {"rule_id": "shell-remote-source", "severity": "critical", "hard_block": true}
+    ]
+  },
+  "generated_files": []
+}

@@ -1,0 +1,4 @@
+pkgbase = demo
+pkgver = 1
+pkgrel = 1
+source = local.patch

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  contribution-policy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce the current external contribution pause
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          case "$PR_AUTHOR" in
+            holgerjh|dependabot\[bot\]) ;;
+            *)
+              echo "::error::External pull requests are paused until the contributor license agreement and its acceptance check are available. See CONTRIBUTING.md."
+              exit 1
+              ;;
+          esac
+
+  security-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install sandbox test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap libarchive-tools
+      - name: Run release checks
+        env:
+          PROLEWATCH_COVERAGE_PROFILE: ${{ runner.temp }}/audit-coverage.out
+        run: make release-check
+      - name: Store audit coverage
+        if: github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: audit-coverage
+          path: ${{ runner.temp }}/audit-coverage.out
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-upload:
+    if: github.event_name == 'push'
+    needs: security-checks
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: audit-coverage
+          path: coverage
+      - name: Upload internal/audit coverage
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          use_oidc: true
+          fail_ci_if_error: true
+          files: coverage/audit-coverage.out
+          disable_search: true
+          flags: audit
+          name: internal-audit

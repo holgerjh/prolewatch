@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "network-warning",
+  "title": "Visible network client warning",
+  "incident": "Deterministic-only policy control",
+  "reference": "docs/security-scenarios.md#scenario-map",
+  "claim": "control",
+  "phase": "pre",
+  "expected": {
+    "decision": "allow",
+    "approval_eligible": false,
+    "coverage_complete": true,
+    "exact_rule_ids": true,
+    "required_findings": [
+      {"rule_id": "unexpected-network-client", "severity": "medium", "hard_block": false}
+    ]
+  },
+  "generated_files": []
+}
