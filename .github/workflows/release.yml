@@ -68,32 +68,32 @@ jobs:
         with:
           subject-path: dist/*
       - name: Attest prolewatch SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/prolewatch-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-linux-${{ matrix.arch }}.cdx.json
       - name: Attest makepkg wrapper SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/prolewatch-makepkg-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-makepkg-linux-${{ matrix.arch }}.cdx.json
       - name: Attest GPG wrapper SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}.cdx.json
       - name: Attest provider dispatcher SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/provider-dispatch-linux-${{ matrix.arch }}
           sbom-path: dist/provider-dispatch-linux-${{ matrix.arch }}.cdx.json
       - name: Attest network broker SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/prolewatch-net-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-net-linux-${{ matrix.arch }}.cdx.json
       - name: Attest build dispatcher SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}.cdx.json
