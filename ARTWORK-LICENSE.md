@@ -2,12 +2,14 @@
 
 Copyright (C) 2026 Holger Heinz. All rights reserved.
 
-This notice applies to two artworks and their technical variants:
+This notice applies to the following artworks and their technical variants:
 
 1. the official Prolewatch logo, contained in
-   `docs/images/prolewatch-logo-biohazard-package.png` and
+   `docs/images/prolewatch-logo-community-shield.png` and
    `internal/audit/webui/logo.png`; and
-2. the Prolewatch hero artwork, contained in
+2. the legacy Prolewatch logo, contained in
+   `docs/images/prolewatch-logo-biohazard-package.png`; and
+3. the Prolewatch hero artwork, contained in
    `docs/images/prolewatch-hero.png` and
    `docs/images/prolewatch-hero-blank.png`.
 

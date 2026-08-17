@@ -7,7 +7,7 @@ style_bold=
 style_dim=
 style_green=
 style_yellow=
-style_cyan=
+style_blue=
 style_red=
 style_muted=
 error_reset=
@@ -20,7 +20,7 @@ glyph_separator='-'
 glyph_code='|'
 
 configure_terminal() {
-  style_reset= style_bold= style_dim= style_green= style_yellow= style_cyan= style_red= style_muted=
+  style_reset= style_bold= style_dim= style_green= style_yellow= style_blue= style_red= style_muted=
   error_reset= error_style=
   brand_enabled=false
   glyph_anchor='#' glyph_bullet='*' glyph_branch='\-' glyph_separator='-' glyph_code='|'
@@ -38,19 +38,19 @@ configure_terminal() {
     if [[ ${COLORTERM:-} == truecolor || ${COLORTERM:-} == 24bit || ${TERM:-} == *direct* ]]; then
       style_green=$'\033[38;2;120;170;130m'
       style_yellow=$'\033[38;2;208;163;91m'
-      style_cyan=$'\033[38;2;163;43;48m'
-      style_red=$'\033[1;38;2;211;81;85m'
+      style_blue=$'\033[38;2;23;147;209m'
+      style_red=$'\033[1;38;2;224;90;95m'
       style_muted=$'\033[38;2;170;162;154m'
     elif [[ ${TERM:-} == *256color* ]]; then
       style_green=$'\033[38;5;108m'
       style_yellow=$'\033[38;5;179m'
-      style_cyan=$'\033[38;5;124m'
+      style_blue=$'\033[38;5;32m'
       style_red=$'\033[1;38;5;167m'
       style_muted=$'\033[38;5;145m'
     else
       style_green=$'\033[32m'
       style_yellow=$'\033[33m'
-      style_cyan=$'\033[31m'
+      style_blue=$'\033[36m'
       style_red=$'\033[1;31m'
       style_muted=$'\033[2m'
     fi
@@ -96,8 +96,8 @@ die() {
 
 print_banner() {
   if [[ ${brand_enabled} == true ]]; then
-    printf '%s%s%s %sPROLEWATCH%s %s%s SYSTEM INSTALLER%s\n' "${style_cyan}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "${style_reset}" "${style_dim}" "${glyph_separator}" "${style_reset}"
-    printf '%s%s%s industrial inspection boundary for AUR builds\n' "${style_dim}" "${glyph_branch}" "${style_reset}"
+    printf '%s%s%s %sPROLEWATCH%s %s%s SYSTEM INSTALLER%s\n' "${style_blue}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "${style_reset}" "${style_dim}" "${glyph_separator}" "${style_reset}"
+    printf '%s%s%s community-focused inspection boundary for AUR builds\n' "${style_dim}" "${glyph_branch}" "${style_reset}"
   else
     printf 'PROLEWATCH - SYSTEM INSTALLER\n'
   fi
@@ -105,7 +105,7 @@ print_banner() {
 
 section() {
   if [[ ${brand_enabled} == true ]]; then
-    printf '\n%s%s%s %s%s/4 %s %s%s\n' "${style_cyan}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "$1" "${glyph_separator}" "$2" "${style_reset}"
+    printf '\n%s%s%s %s%s/4 %s %s%s\n' "${style_blue}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "$1" "${glyph_separator}" "$2" "${style_reset}"
   else
     printf '\n== [%s/4] %s ==\n' "$1" "$2"
   fi
@@ -113,7 +113,7 @@ section() {
 
 subheading() {
   if [[ ${brand_enabled} == true ]]; then
-    printf '\n%s%s%s %s%s%s\n' "${style_cyan}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "$*" "${style_reset}"
+    printf '\n%s%s%s %s%s%s\n' "${style_blue}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "$*" "${style_reset}"
   else
     printf '\n%s\n' "$*"
   fi
@@ -166,7 +166,7 @@ run_with_spinner() {
   local frame=0
   while kill -0 "${active_step_pid}" 2>/dev/null; do
     printf '\r\033[2K  %s%s%s %s%s%s  %s%s%s' \
-      "${style_bold}" "${style_cyan}" "${frames[frame]}" \
+      "${style_bold}" "${style_blue}" "${frames[frame]}" \
       "${style_bold}" "${label}" "${style_reset}" \
       "${style_dim}" "${command_display}" "${style_reset}"
     frame=$(( (frame + 1) % ${#frames[@]} ))

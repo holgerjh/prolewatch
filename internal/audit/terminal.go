@@ -49,7 +49,7 @@ func (p TerminalPresentation) Header(title, stamp string, success bool) string {
 	if success {
 		role = "green"
 	}
-	return p.renderer.paint("rust", p.renderer.anchor()) + " " + p.renderer.paint("bold", terminalInline(title, 200)) + "  " + p.renderer.stamp(terminalInline(stamp, 40), role)
+	return p.renderer.paint("blue", p.renderer.anchor()) + " " + p.renderer.paint("bold", terminalInline(title, 200)) + "  " + p.renderer.stamp(terminalInline(stamp, 40), role)
 }
 
 func (p TerminalPresentation) Status(status, message string, success bool) string {
@@ -146,13 +146,13 @@ func (r terminalRenderer) paint(role, value string) string {
 	switch r.caps.Color {
 	case terminalColorTrue:
 		code = map[string]string{
-			"red": "1;38;2;211;81;85", "rust": "38;2;163;43;48", "amber": "38;2;208;163;91",
+			"red": "1;38;2;224;90;95", "blue": "38;2;23;147;209", "amber": "38;2;208;163;91",
 			"green": "38;2;120;170;130", "muted": "38;2;170;162;154", "bold": "1",
 		}[role]
 	case terminalColor256:
-		code = map[string]string{"red": "1;38;5;167", "rust": "38;5;124", "amber": "38;5;179", "green": "38;5;108", "muted": "38;5;145", "bold": "1"}[role]
+		code = map[string]string{"red": "1;38;5;167", "blue": "38;5;32", "amber": "38;5;179", "green": "38;5;108", "muted": "38;5;145", "bold": "1"}[role]
 	case terminalColor16:
-		code = map[string]string{"red": "1;31", "rust": "31", "amber": "33", "green": "32", "muted": "2", "bold": "1"}[role]
+		code = map[string]string{"red": "1;31", "blue": "36", "amber": "33", "green": "32", "muted": "2", "bold": "1"}[role]
 	}
 	if code == "" {
 		return value
@@ -175,7 +175,7 @@ func (r terminalRenderer) activation() string {
 	if !r.enabled() {
 		return ""
 	}
-	return r.paint("rust", r.anchor()) + " " + r.paint("bold", "PROLEWATCH ACTIVE") + r.paint("muted", r.divider()+"guarding this yay transaction")
+	return r.paint("blue", r.anchor()) + " " + r.paint("bold", "PROLEWATCH ACTIVE") + r.paint("muted", r.divider()+"guarding this yay transaction")
 }
 
 func (r terminalRenderer) successLine(message string) string {
@@ -240,7 +240,7 @@ func (r terminalRenderer) report(report *Report) string {
 		content = "unavailable"
 	}
 	lines := []string{
-		r.paint("rust", r.anchor()) + " " + r.paint("bold", "INSPECTION") + r.paint("muted", r.divider()) + r.paint("bold", terminalInline(report.PackageBase, 4096)) + r.paint("muted", " / "+terminalInline(report.Phase, 100)) + "  " + r.stamp(decision, role),
+		r.paint("blue", r.anchor()) + " " + r.paint("bold", "INSPECTION") + r.paint("muted", r.divider()) + r.paint("bold", terminalInline(report.PackageBase, 4096)) + r.paint("muted", " / "+terminalInline(report.Phase, 100)) + "  " + r.stamp(decision, role),
 		r.paint("muted", r.bullet()) + " report   " + terminalInline(report.ReportID, 4096),
 		r.paint("muted", r.bullet()) + " content  " + terminalInline(content, 128),
 	}
@@ -347,7 +347,7 @@ func (r terminalRenderer) checks(checks []Check) string {
 	if ready {
 		label, role = "READY", "green"
 	}
-	lines := []string{r.paint("rust", r.anchor()) + " " + r.paint("bold", "SYSTEM CHECK") + "  " + r.stamp(label, role)}
+	lines := []string{r.paint("blue", r.anchor()) + " " + r.paint("bold", "SYSTEM CHECK") + "  " + r.stamp(label, role)}
 	for _, check := range checks {
 		checkLabel, checkRole, marker := "FAIL", "red", r.anchor()
 		if check.OK {

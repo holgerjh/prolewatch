@@ -1,21 +1,36 @@
 # Prolewatch
 
 <p align="center">
-  <img src="docs/images/prolewatch-logo-biohazard-package.png" alt="Prolewatch" width="620">
+  <img src="docs/images/prolewatch-logo-community-shield.png" alt="Prolewatch" width="620">
 </p>
 
 <p align="center">
-  <em>If there is malware, it comes through the proles.</em><br>
-  <strong>Trust the proles. Scrutinize their packages.</strong>
+  <strong>If there is hope for Linux, it lies in its community. Protect what we build together.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/holgerjh/prolewatch/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/holgerjh/prolewatch/actions/workflows/ci.yml/badge.svg?branch=dev"></a>
   <a href="go.mod"><img alt="Go 1.26.6 or newer" src="https://img.shields.io/badge/Go-1.26.6%2B-00ADD8?logo=go&amp;logoColor=white"></a>
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-a32b30">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-1793d1">
   <img alt="Platform: Arch Linux" src="https://img.shields.io/badge/platform-Arch%20Linux-1793d1">
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-663399"></a>
 </p>
+
+`prolewatch` is a security tool for the Arch User Repository, built in
+appreciation of the people who create, maintain, review, and use community
+packages. Its name nods to George Orwell's *1984*: hope lies with ordinary
+people, not concentrated power.
+
+The AUR's openness is its strength. Like every open software ecosystem, it can
+also be targeted by compromised accounts, hostile upstreams, and misleading
+packages. Prolewatch adds inspection and containment to help users review
+package behavior—supporting the community rather than distrusting it.
+
+## Features
+
+* **Code Scrutiny:** Automatically inspects AUR package build files for suspicious scripts.
+* **Community Defense:** Keeps your system secure while embracing the power of user-contributed software.
+* **Lightweight & Fast:** Designed to integrate seamlessly into your package review workflow.
 
 Prolewatch adds inspection and containment gates to AUR builds driven by
 [`yay`](https://github.com/Jguer/yay). It examines package material before it
@@ -26,7 +41,7 @@ The sourced **[AUR threat model and incident map](docs/aur-threat-model.md)**
 connects those controls to represented attacks, documents their exact claim
 boundaries, and tracks the risks that remain.
 
-## Highlights
+## Security controls
 
 | Control | What makes it useful |
 | --- | --- |
@@ -276,7 +291,7 @@ prints the exact root and locked-account sudo rules it will install, and
 requires typed confirmation. For reviewed automation, `-y` or
 `--assume-yes` skips only that confirmation and permits non-TTY execution;
 all preflight and safety checks still run. The default `brand` terminal style
-uses the same rust, amber, and green inspection language as the dashboard;
+uses the same blue, amber, and green inspection language as the dashboard;
 pass `--terminal-style plain` to disable it. Redirected output and `TERM=dumb`
 stay byte-stable and plain. `NO_COLOR` removes color while retaining structural
 status markers. The installer does not install or authenticate a provider. See the
