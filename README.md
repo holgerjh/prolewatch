@@ -17,29 +17,41 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-663399"></a>
 </p>
 
-`prolewatch` adds review and containment gates to AUR builds run through
-[`yay`](https://github.com/Jguer/yay). It inspects package material before
-execution, builds inside a disposable Arch userspace, and checks the resulting
-package before installation.
+-Prolewatch adds inspection and containment gates to AUR builds driven by
+-[`yay`](https://github.com/Jguer/yay). It examines package material before it
+-runs, builds inside a disposable Arch userspace, and inspects the resulting
+-package before handing it back for installation.
+
+It is not a replacement: `yay` still resolves and orders the transaction, while `makepkg` interprets
+the `PKGBUILD` and runs its standard phases. Prolewatch only controls the security
+boundary around those steps.
+
+The AUR's openness is its strength. Like any open software ecosystem, it can be
+targeted through compromised accounts, hostile upstreams, or misleading
+packages. The sourced **[AUR threat model and incident map](docs/aur-threat-model.md)**
+connects those controls to represented attacks, documents their exact claim
+boundaries, and tracks the risks that remain.
 
 The name is a reference to George Orwell's *1984*, where the proles are
 ordinary people outside the Party's power structure. For this project, the
 reference points to the users, maintainers, and contributors who keep Linux
 and the AUR working.
 
-The AUR's openness is its strength. Like any open software ecosystem, it can be
-targeted through compromised accounts, hostile upstreams, or misleading
-packages.
-
-The sourced **[AUR threat model and incident map](docs/aur-threat-model.md)**
-connects those controls to represented attacks, documents their exact claim
-boundaries, and tracks the risks that remain.
 
 ## What it does
+
+> [!WARNING]
+> Prolewatch is experimental and a work in progress. It has not received an
+> independent security audit and does not certify AUR packages as safe. In
+> particular, AI-review prompts, provider- and model-specific calibration,
+> confidence thresholds, and evaluation coverage are still evolving and will
+> be refined in future releases. Start on an isolated Arch Linux system before
+> relying on it.
 
 * **Before execution:** Scans package build files, archives, paths, and committed executables before package-controlled code runs.
 * **During the build:** Runs package phases as a normal user inside disposable Arch userspace with resource, filesystem, and network limits.
 * **Before installation:** Inspects the resulting archive, verifies its hash, and returns only the reviewed read-only artifact to `yay`.
+
 
 ## Security controls
 
@@ -54,19 +66,7 @@ boundaries, and tracks the risks that remain.
   <img src="docs/images/prolewatch-terminal-demo.gif" alt="Prolewatch activates inside yay, performs AI-assisted inspection, and seals reviewed package artifacts." width="1073">
 </p>
 
-<p align="center"><em>A complete yay transaction, from pre-scan to sealed package handoff.</em></p>
-
-`yay` still resolves and orders the transaction, while `makepkg` interprets
-the `PKGBUILD` and runs its standard phases. Prolewatch controls the security
-boundary around those steps.
-
-> [!WARNING]
-> Prolewatch is experimental and a work in progress. It has not received an
-> independent security audit and does not certify AUR packages as safe. In
-> particular, AI-review prompts, provider- and model-specific calibration,
-> confidence thresholds, and evaluation coverage are still evolving and will
-> be refined in future releases. Start on an isolated Arch Linux system before
-> relying on it.
+<p align="center"><em>A complete yay transaction.</em></p>
 
 Prolewatch covers a narrower scope than a general malware or trust service:
 
@@ -403,6 +403,6 @@ notices are collected in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
 ## Development transparency
 
 Prolewatch is human-directed and human-maintained. Generative AI coding
-assistants have been used for implementation drafts, debugging, documentation,
-and review. Human maintainers decide which changes are accepted and review and
-test them before they are included.
+assistants have been used for implementation, debugging, documentation,
+and review. Human maintainers decide which changes are accepted before they are included.
+
