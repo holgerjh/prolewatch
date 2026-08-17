@@ -110,6 +110,13 @@ func appendReadOnlyPolicyPath(args *[]string, hostPath string) error {
 		return err
 	}
 	validated.Close()
+	appendReadOnlyPolicyBind(args, hostPath, info.IsDir())
+	return nil
+}
+
+// appendReadOnlyPolicyBind constructs the Bubblewrap arguments only after the
+// caller has validated the complete host path with openRootOwnedPath.
+func appendReadOnlyPolicyBind(args *[]string, hostPath string, directory bool) {
 	parent := filepath.Dir(hostPath)
 	components := strings.Split(strings.TrimPrefix(parent, "/"), "/")
 	current := ""
@@ -123,11 +130,10 @@ func appendReadOnlyPolicyPath(args *[]string, hostPath string) error {
 			*args = append(*args, "--dir", current)
 		}
 	}
-	if info.IsDir() {
+	if directory {
 		*args = append(*args, "--dir", hostPath)
 	}
 	*args = append(*args, "--ro-bind", hostPath, hostPath)
-	return nil
 }
 
 type Invocation struct {
