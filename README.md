@@ -17,10 +17,10 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-663399"></a>
 </p>
 
--Prolewatch adds inspection and containment gates to AUR builds driven by
--[`yay`](https://github.com/Jguer/yay). It examines package material before it
--runs, builds inside a disposable Arch userspace, and inspects the resulting
--package before handing it back for installation.
+Prolewatch adds inspection and containment gates to AUR builds driven by
+[`yay`](https://github.com/Jguer/yay). It examines package material before it
+runs, builds inside a disposable Arch userspace, and inspects the resulting
+package before handing it back for installation.
 
 It is not a replacement: `yay` still resolves and orders the transaction, while `makepkg` interprets
 the `PKGBUILD` and runs its standard phases. Prolewatch only controls the security
