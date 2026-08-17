@@ -55,7 +55,8 @@ The incident sources and the broader status assessment are maintained in the
 
 Stored fixture files must be small, regular, and non-executable. Package content
 may reference only reserved `.invalid` hostnames. Synthetic inputs that Git
-cannot represent clearly are generated in a fresh temporary directory:
+cannot store safely as ordinary repository files are generated in a fresh
+temporary directory:
 
 - `minimal-elf` is a short, non-executable ELF-identification header with no
   program body;
@@ -106,8 +107,8 @@ validates the installed files, permissions, yay hook, clean root, sandbox
 smoke test, and—when AI mode is configured—the existing provider attestation.
 It does not make a live provider request.
 
-The installed scenario command deliberately uses the deterministic scanner and
-policy without loading the configured review mode. It writes no reports or
+The installed scenario command uses the deterministic scanner and policy
+without loading the configured review mode. It writes no reports or
 markers, executes no fixture content, and leaves package-manager and Prolewatch
 state unchanged. A single case can be selected explicitly:
 
@@ -123,8 +124,8 @@ installed scanner that disagrees with the declared corpus.
 
 This suite is an unprivileged acceptance/integration test: it exercises actual
 inventory, rule, threat-bundle, structural, and deterministic decision code.
-It deliberately does not construct a production report with installed-tool
-identity, write markers, consume approvals, or invoke privileged components.
+It does not construct a production report with installed-tool identity, write
+markers, consume approvals, or invoke privileged components.
 
 A true system E2E suite would require a disposable Arch VM or similarly isolated
 host and would cover:
@@ -137,9 +138,8 @@ yay -> Lua hook -> pre/post scan -> makepkg wrapper -> clean-root sandbox
 That future suite should use a benign allow path and blocked fixtures whose
 package-controlled code is never reached. It should not run attack simulations
 on a developer host. Maintainer compromise, adoption abuse, typosquatting,
-runtime-only behavior, compromised upstreams, and AUR availability attacks
-remain threat-model statements rather than misleading green non-detection
-tests.
+runtime-only behavior, compromised upstreams, and AUR availability attacks are
+documented in the threat model and are not represented as passing scenarios.
 
 ## Adding a scenario
 

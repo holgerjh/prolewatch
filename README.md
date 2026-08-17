@@ -5,7 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>If there is hope for Linux, it lies in its community. Protect what we build together.</strong>
+  <em>If there is hope for Linux, it lies in its community.</em><br>
+  <strong>Protect what we build together.</strong>
 </p>
 
 <p align="center">
@@ -16,34 +17,33 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-663399"></a>
 </p>
 
-`prolewatch` is a security tool for the Arch User Repository, built in
-appreciation of the people who create, maintain, review, and use community
-packages. Its name nods to George Orwell's *1984*: hope lies with ordinary
-people, not concentrated power.
+`prolewatch` adds review and containment gates to AUR builds run through
+[`yay`](https://github.com/Jguer/yay). It inspects package material before
+execution, builds inside a disposable Arch userspace, and checks the resulting
+package before installation.
 
-The AUR's openness is its strength. Like every open software ecosystem, it can
-also be targeted by compromised accounts, hostile upstreams, and misleading
-packages. Prolewatch adds inspection and containment to help users review
-package behavior—supporting the community rather than distrusting it.
+The name is a reference to George Orwell's *1984*, where the proles are
+ordinary people outside the Party's power structure. For this project, the
+reference points to the users, maintainers, and contributors who keep Linux
+and the AUR working.
 
-## Features
-
-* **Code Scrutiny:** Automatically inspects AUR package build files for suspicious scripts.
-* **Community Defense:** Keeps your system secure while embracing the power of user-contributed software.
-* **Lightweight & Fast:** Designed to integrate seamlessly into your package review workflow.
-
-Prolewatch adds inspection and containment gates to AUR builds driven by
-[`yay`](https://github.com/Jguer/yay). It examines package material before it
-runs, builds inside a disposable Arch userspace, and inspects the resulting
-package before handing it back for installation.
+The AUR's openness is its strength. Like any open software ecosystem, it can be
+targeted through compromised accounts, hostile upstreams, or misleading
+packages.
 
 The sourced **[AUR threat model and incident map](docs/aur-threat-model.md)**
 connects those controls to represented attacks, documents their exact claim
 boundaries, and tracks the risks that remain.
 
+## What it does
+
+* **Before execution:** Scans package build files, archives, paths, and committed executables before package-controlled code runs.
+* **During the build:** Runs package phases as a normal user inside disposable Arch userspace with resource, filesystem, and network limits.
+* **Before installation:** Inspects the resulting archive, verifies its hash, and returns only the reviewed read-only artifact to `yay`.
+
 ## Security controls
 
-| Control | What makes it useful |
+| Control | Effect |
 | --- | --- |
 | **Deterministic inspection gates** | Fail-closed archive, path, integrity, shell-behavior, containment, and artifact checks run before any heuristic judgement. |
 | **Isolated contextual AI review** | A bounded cross-file snapshot can expose intent and composition that narrow signatures miss. |
@@ -54,11 +54,11 @@ boundaries, and tracks the risks that remain.
   <img src="docs/images/prolewatch-terminal-demo.gif" alt="Prolewatch activates inside yay, performs AI-assisted inspection, and seals reviewed package artifacts." width="1073">
 </p>
 
-<p align="center"><em>One yay transaction: visible activation, measured guard status, explicit decisions, and sealed output.</em></p>
+<p align="center"><em>A complete yay transaction, from pre-scan to sealed package handoff.</em></p>
 
-The familiar Arch workflow stays in charge: `yay` resolves and orders the
-transaction, while `makepkg` interprets the `PKGBUILD` and runs its standard
-phases. Prolewatch controls the security boundary around those steps.
+`yay` still resolves and orders the transaction, while `makepkg` interprets
+the `PKGBUILD` and runs its standard phases. Prolewatch controls the security
+boundary around those steps.
 
 > [!WARNING]
 > Prolewatch is experimental and a work in progress. It has not received an
@@ -68,20 +68,20 @@ phases. Prolewatch controls the security boundary around those steps.
 > be refined in future releases. Start on an isolated Arch Linux system before
 > relying on it.
 
-Prolewatch is deliberately narrower than a general malware or trust service:
+Prolewatch covers a narrower scope than a general malware or trust service:
 
 | It helps reduce | It does not establish |
 | --- | --- |
 | <ul><li>Recognizable malicious package content</li><li>Archive and path escapes</li><li>Uncontrolled build egress and host-path access</li><li>Resource exhaustion</li><li>Artifact replacement</li></ul> | <ul><li>Maintainer identity or upstream integrity</li><li>Arbitrary program safety</li><li>Host-kernel isolation</li><li>Runtime safety after installation</li><li>Freedom from false negatives or false positives</li></ul> |
 
-## How Prolewatch protects a build
+## Build review flow
 
 ![A sealed PKGBUILD package marked “Handle with care” passes beneath an inspection system.](docs/images/prolewatch-hero.png)
 
-| Stage | Prolewatch action | Security value |
+| Stage | Prolewatch action | Purpose |
 | --- | --- | --- |
 | Before source processing | Inventories the AUR checkout and applies deterministic rules; optionally performs isolated AI review | Stops hard-blocked structures and recognized dangerous behavior before package code runs |
-| After source retrieval | Binds exact vendor-source bytes, records provenance and verification, and applies the configured vendor scan depth | Treats newly arrived material as a new decision without pretending that upstream source review proves vendor safety |
+| After source retrieval | Binds exact vendor-source bytes, records provenance and verification, and applies the configured vendor scan depth | Applies a fresh decision to newly arrived material; upstream source review does not establish vendor safety |
 | During the build | Runs package-controlled phases as the normal user inside Bubblewrap, a disposable root, resource limits, and a selective network boundary | Auto-enables a bounded broker for the allowlisted `cargo fetch --locked` shape while keeping ecosystem installers, arbitrary downloaders, and unknown egress offline by default |
 | Before installation | Inspects produced package archives, verifies their hashes during transfer, and returns only a sealed read-only handoff | Prevents an inspected artifact from being silently replaced before `yay` gives it to `pacman` |
 
@@ -124,8 +124,8 @@ and so on. This setting never weakens the AUR checkout scan or the final
 ### Trust boundary
 
 Package-controlled material remains untrusted throughout the transaction.
-Prolewatch's controls depend on an explicit trusted computing base rather than
-pretending the scanner can validate everything beneath itself.
+Prolewatch's controls depend on an explicit trusted computing base. The
+scanner cannot validate the components that enforce its own boundary.
 
 ```mermaid
 flowchart LR
@@ -157,12 +157,12 @@ Bubblewrap shares the host kernel; it is not a virtual machine. The full
 process, privilege, network, Pacman-hook, and sealing model is documented in
 the [technical architecture guide](docs/architecture.md).
 
-### See the boundary
+### Local dashboard
 
-Run `prolewatch web` to open the local, read-only dashboard. It presents actual
-stages rather than invented percentages, shows scan counters and provider
-deadlines, separates privileged dependency staging from normal-user package
-execution, and exposes validated findings and sandbox evidence.
+Run `prolewatch web` to open the local, read-only dashboard. It shows the
+current stage and elapsed time, scan counters, provider deadlines, privileged
+dependency staging, normal-user package execution, validated findings, and
+sandbox evidence.
 
 ![Prolewatch local dashboard showing containment stages and a blocked synthetic package report.](docs/images/prolewatch-dashboard.png)
 
@@ -312,7 +312,7 @@ running, one live line shows the actual stage, package, observed file/byte and
 archive counters, AI batch, and applicable deadline. During sandbox execution,
 the latest sanitized child-process line replaces the outer command, so long
 compiles expose concrete activity without allowing package-controlled terminal
-escapes. A small rotating wheel is a heartbeat for the live guard line, not a
+escapes. A small rotating wheel is a heartbeat for the live status line, not a
 claim of measurable progress. The line never invents a percentage or labels an
 agent as stuck; a reached deadline is shown explicitly while the fail-closed
 timeout handling completes. It is cleared before reports and prompts.
@@ -338,7 +338,7 @@ finding, and neither creates a reusable package allowlist.
 
 For a clean reinstall, run `prolewatch uninstall-hook` as the normal user
 before `sudo ./scripts/uninstall-system.sh`. The latter removes the installed
-system configuration but deliberately preserves credentials, clean roots, and
+system configuration but preserves credentials, clean roots, and
 user audit history; the [uninstall guide](docs/user-guide.md#uninstalling)
 explains the optional full-state purge.
 

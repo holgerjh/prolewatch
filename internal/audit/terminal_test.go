@@ -122,6 +122,9 @@ func TestTerminalRendererPresentationBranches(t *testing.T) {
 	if got := trueColor.paint("blue", "brand"); !strings.Contains(got, "38;2;23;147;209") {
 		t.Fatalf("true-color brand accent is not Arch blue: %q", got)
 	}
+	if got := trueColor.activation(); !strings.Contains(got, "reviewing this yay transaction") {
+		t.Fatalf("activation marker omitted the review status: %q", got)
+	}
 	plain := terminalRendererWithCapabilities(&output, terminalCapabilities{})
 	if plain.activation() != "" || plain.sealedLine(1) != "" || plain.successLine("ok") != "ok" || plain.detailLine("detail") != "detail" || plain.blockLine("blocked") != "blocked" || plain.errorLine("bad") != "prolewatch: bad" {
 		t.Fatal("plain presentation did not preserve legacy messages")

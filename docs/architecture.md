@@ -307,7 +307,7 @@ becomes the report `content_hash`. Marker validation repeats the bounded
 physical-file hashing without re-running semantic or archive analysis.
 Coverage limits within the selected scan policy are part of the decision:
 incomplete required coverage is a block, while intentional vendor exclusion is
-reported as policy rather than mislabeled as a coverage gap.
+reported as a policy exclusion, not a coverage gap.
 
 Structural findings cannot receive a normal approval. When AI review is
 enabled and no structural hard block has already ended the phase, the reviewer
@@ -339,7 +339,7 @@ carry no AI reviewer metadata. The review mode itself participates in the
 policy fingerprint, so switching modes invalidates decisions made under the
 other mode.
 
-In AI mode, the provider sees a deliberately narrower object than the scanner:
+In AI mode, the provider receives a narrower object than the scanner:
 
 ```mermaid
 flowchart LR
@@ -811,7 +811,7 @@ recreate its marker, report binding, or sealed handoff.
 
 ### Sealed handoff versus root artifact cache
 
-These objects have deliberately different meanings:
+These objects serve different purposes:
 
 | Object | Purpose | Security meaning |
 | --- | --- | --- |
@@ -834,7 +834,7 @@ and runs inside the privileged staging sandbox.
 ## Activity model
 
 Activities are bounded progress records for the local dashboard and reports.
-They describe coarse stages rather than inventing percentages. A scan activity
+They record coarse stages and do not calculate percentages. A scan activity
 has kind `scan`; an intercepted makepkg call has kind `makepkg` and one of the
 supported invocation profiles.
 
