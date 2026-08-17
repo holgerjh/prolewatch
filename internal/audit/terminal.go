@@ -175,7 +175,7 @@ func (r terminalRenderer) activation() string {
 	if !r.enabled() {
 		return ""
 	}
-	return r.paint("blue", r.anchor()) + " " + r.paint("bold", "PROLEWATCH ACTIVE") + r.paint("muted", r.divider()+"guarding this yay transaction")
+	return r.paint("blue", r.anchor()) + " " + r.paint("bold", "PROLEWATCH ACTIVE") + r.paint("muted", r.divider()+"reviewing this yay transaction")
 }
 
 func (r terminalRenderer) successLine(message string) string {

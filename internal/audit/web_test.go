@@ -33,7 +33,7 @@ func TestWebSecurityBoundaryAndEmbeddedAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := server.handler()
-	if response := webRequest(t, handler, http.MethodGet, "/", server.host, ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Package scrutiny") {
+	if response := webRequest(t, handler, http.MethodGet, "/", server.host, ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "AUR build review") {
 		t.Fatalf("embedded index unavailable: %d %s", response.Code, response.Body.String())
 	}
 	for _, path := range []string{"/app.css", "/app.js", "/logo.png"} {

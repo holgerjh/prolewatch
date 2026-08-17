@@ -397,7 +397,7 @@ dashboard palette and a small inspection vocabulary: `◆` for a security gate,
 During scans and AI review, one in-place line displays only measured state:
 the current stage and package, files and bytes seen, archive and entry counts,
 the current AI batch, and the active deadline. A small rotating Unicode wheel
-(or ASCII fallback) shows that the live guard line is active; it is a heartbeat,
+(or ASCII fallback) shows that the live status line is active; it is a heartbeat,
 not a progress estimate. A silent provider still leaves the current AI batch
 and countdown visible. Prolewatch does not infer that an agent is “stuck” and
 does not show synthetic percentages; it reports `deadline reached` only when
@@ -443,7 +443,7 @@ automatically:
 | `medium` | `ALLOW` | `AUTO-ALLOW` | Block; offer one-time `[y/N]` confirmation |
 | `low` | `ALLOW` | `AUTO-ALLOW` | `AUTO-ALLOW` |
 
-`AUTO-ALLOW` is deliberately not called an approval. No token or reusable
+`AUTO-ALLOW` is not an approval. No token or reusable
 exception is created: the current policy itself accepted a validated AI
 `allow` verdict. The terminal report prints the actual AI confidence, the
 configured minimum, and an automatic-policy summary. A high-confidence normal
@@ -590,8 +590,7 @@ loopback boundary as well.
 The dashboard shows:
 
 - the active clean-root identity;
-- live scan and build stages without invented percentages, including total and
-  current-stage age;
+- live scan and build stages with total and current-stage age;
 - deterministic scan operation, file, input-byte, archive, and archive-entry
   counters, plus the last progress checkpoint;
 - AI provider checks and review batches with their configured deadline;
@@ -604,10 +603,10 @@ The dashboard shows:
   states; and
 - validated report summaries, findings, and sandbox evidence.
 
-Health labels are deliberately conservative. A scan is marked for attention
-only when its counters have not advanced for 30 seconds (or half a shorter
+Health labels describe observed timing only. A scan is marked for attention
+when its counters have not advanced for 30 seconds (or half a shorter
 configured scan timeout). An AI request is marked as taking longer after 80
-percent of its timeout; this is not presented as proof that the model is stuck.
+percent of its timeout; the label does not diagnose the model.
 An overdue label means the configured deadline has been reached and timeout
 shutdown is in progress. A vanished worker is shown as interrupted, while a
 completed timeout or provider/scanner error is shown with a bounded reason and
@@ -628,7 +627,7 @@ Inspect the active generation as the normal user:
 prolewatch clean-root status
 ```
 
-Create or deliberately update it as an administrator:
+Create or update it as an administrator:
 
 ```bash
 sudo prolewatch clean-root init

@@ -97,7 +97,7 @@ die() {
 print_banner() {
   if [[ ${brand_enabled} == true ]]; then
     printf '%s%s%s %sPROLEWATCH%s %s%s SYSTEM INSTALLER%s\n' "${style_blue}" "${glyph_anchor}" "${style_reset}" "${style_bold}" "${style_reset}" "${style_dim}" "${glyph_separator}" "${style_reset}"
-    printf '%s%s%s community-focused inspection boundary for AUR builds\n' "${style_dim}" "${glyph_branch}" "${style_reset}"
+    printf '%s%s%s review and containment for AUR builds\n' "${style_dim}" "${glyph_branch}" "${style_reset}"
   else
     printf 'PROLEWATCH - SYSTEM INSTALLER\n'
   fi
