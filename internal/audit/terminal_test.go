@@ -112,12 +112,15 @@ func TestTerminalRendererPresentationBranches(t *testing.T) {
 	color256 := terminalRendererWithCapabilities(&output, terminalCapabilities{Interactive: true, Color: terminalColor256})
 	color16 := terminalRendererWithCapabilities(&output, terminalCapabilities{Interactive: true, Color: terminalColor16})
 	for _, rendered := range []string{
-		trueColor.paint("rust", "rust"), color256.paint("amber", "amber"), color16.paint("green", "green"), color16.paint("unknown", "plain"),
+		trueColor.paint("blue", "blue"), color256.paint("amber", "amber"), color16.paint("green", "green"), color16.paint("unknown", "plain"),
 		trueColor.activation(), trueColor.successLine("done"), trueColor.detailLine("detail"), trueColor.errorLine("failure"), trueColor.blockLine("blocked"), trueColor.sealedLine(2),
 	} {
 		if rendered == "" {
 			t.Fatal("presentation branch rendered an empty value")
 		}
+	}
+	if got := trueColor.paint("blue", "brand"); !strings.Contains(got, "38;2;23;147;209") {
+		t.Fatalf("true-color brand accent is not Arch blue: %q", got)
 	}
 	plain := terminalRendererWithCapabilities(&output, terminalCapabilities{})
 	if plain.activation() != "" || plain.sealedLine(1) != "" || plain.successLine("ok") != "ok" || plain.detailLine("detail") != "detail" || plain.blockLine("blocked") != "blocked" || plain.errorLine("bad") != "prolewatch: bad" {
