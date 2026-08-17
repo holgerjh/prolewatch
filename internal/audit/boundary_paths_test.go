@@ -638,9 +638,12 @@ func TestBuildBoundaryConstructionAndKeyringCopy(t *testing.T) {
 		}
 	}
 	var args []string
-	if err := appendReadOnlyPolicyPath(&args, "/usr/share"); rootOwned && (err != nil || len(args) == 0) {
-		t.Fatalf("trusted read-only path was rejected: %#v %v", args, err)
+	appendReadOnlyPolicyBind(&args, "/usr/share", true)
+	wantArgs := []string{"--dir", "/usr/share", "--ro-bind", "/usr/share", "/usr/share"}
+	if strings.Join(args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("read-only policy bind arguments changed: %#v", args)
 	}
+	args = nil
 	if err := appendReadOnlyPolicyPath(&args, t.TempDir()); err == nil {
 		t.Fatal("user-owned read-only path accepted")
 	}
