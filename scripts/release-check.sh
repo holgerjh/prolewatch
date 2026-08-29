@@ -17,25 +17,44 @@ go mod verify
 go tool golang.org/x/vuln/cmd/govulncheck ./...
 go test -race ./...
 go vet ./...
+"$(dirname "$0")/check-import-direction.sh"
 go run ./cmd/prolewatch-scenarios
-bash -n scripts/*.sh
-installer_help=$(./scripts/install-system.sh --help)
-[[ ${installer_help} == *'--assume-yes'* && ${installer_help} == *'--update-clean-root'* && ${installer_help} == *'--terminal-style'* ]] || {
-  echo "installer help is missing expected options" >&2
-  exit 1
-}
-if ./scripts/install-system.sh --invalid-option >/dev/null 2>&1; then
-  echo "installer accepted an invalid option" >&2
+bash -n scripts/*.sh scripts/probes/*.sh
+# Release invariant 1: prolewatch adds no passwordless privileged interface.
+# Assert the invariant against the tree.
+# Not `$(find ... 2>/dev/null)`: under set -e a failing find kills the script
+# with its only diagnostic discarded, so the explicit directory checks keep
+# gate failures visible.
+for required_dir in share packaging; do
+  [[ -d ${required_dir} ]] || { printf 'release-check: %s/ is missing\n' "${required_dir}" >&2; exit 1; }
+done
+privileged_assets=$(find share/ packaging/ -type f \
+  \( -name '*.service' -o -name '*.socket' -o -name '*.sysusers' \
+     -o -name '*.tmpfiles' -o -name '*.hook' -o -name '*.rules' \))
+if [[ -n ${privileged_assets} ]]; then
+  printf 'a system unit, socket, sysusers, tmpfiles, hook or udev rule reappeared:\n%s\n' \
+    "${privileged_assets}" >&2
   exit 1
 fi
-go test ./internal/audit -coverprofile="${coverage_profile}"
+if grep -rn 'NOPASSWD\|/etc/sudoers' --include='*.go' --include='*.sh' --include='*.in' . 2>/dev/null \
+   | grep -v '^./docs/' | grep -v '^./scripts/release-check.sh:' | grep -q .; then
+  echo "a sudoers or NOPASSWD reference reappeared" >&2
+  exit 1
+fi
+
+# Coverage is measured across every internal package so the gate cannot pass
+# while an internal subsystem is entirely untested.
+go test ./internal/... -coverprofile="${coverage_profile}"
 
 coverage=$(go tool cover -func="${coverage_profile}" | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
-minimum=${PROLEWATCH_MIN_COVERAGE:-80.0}
-awk -v actual="${coverage}" -v required="${minimum}" 'BEGIN { if (actual + 0 < required + 0) { printf "security package coverage %.1f%% is below %.1f%%\n", actual, required > "/dev/stderr"; exit 1 } }'
+# 72% across every internal package. This is a regression gate, not a target:
+# it sits a little below the current figure so ordinary work does not trip it,
+# and the way to ratchet is to raise it deliberately after adding tests.
+minimum=${PROLEWATCH_MIN_COVERAGE:-72.0}
+awk -v actual="${coverage}" -v required="${minimum}" 'BEGIN { if (actual + 0 < required + 0) { printf "internal coverage %.1f%% is below %.1f%%\n", actual, required > "/dev/stderr"; exit 1 } }'
 
 GOOS=linux GOARCH=amd64 PROLEWATCH_BUILD_DIR="${check_tmp}/build" ./scripts/build.sh
 test "$(<"${check_tmp}/build/.source-fingerprint")" = "$(./scripts/source-fingerprint.sh)"
 ./scripts/generate-sbom.sh amd64 "${check_tmp}/build" "${check_tmp}/sbom"
-test "$(find "${check_tmp}/sbom" -maxdepth 1 -type f -name '*.cdx.json' | wc -l)" -eq 6
-printf 'Release checks passed; internal/audit coverage: %s%%\n' "${coverage}"
+test "$(find "${check_tmp}/sbom" -maxdepth 1 -type f -name '*.cdx.json' | wc -l)" -eq 4
+printf 'Release checks passed; internal coverage: %s%%\n' "${coverage}"

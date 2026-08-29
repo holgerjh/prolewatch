@@ -1,6 +1,9 @@
 package audit
 
 import (
+	"context"
+
+	"github.com/holgerjh/prolewatch/internal/brief"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,17 +24,8 @@ func TestInvocationClassificationDoesNotMutateProfiles(t *testing.T) {
 	}
 }
 
-func TestSealedPathRejectsUnsafeNames(t *testing.T) {
-	report := &Report{ReportID: "20260812T010203Z-aaaaaaaaaaaa-bbbbbbbb"}
-	for _, name := range []string{"", ".", "..", "../escape.pkg.tar.zst", `sub\\escape.pkg.tar.zst`} {
-		if _, err := sealedPath(report, name); err == nil {
-			t.Fatalf("unsafe name accepted: %q", name)
-		}
-	}
-}
-
 func TestArtifactHashComesFromReviewedManifest(t *testing.T) {
-	record := FileRecord{Path: "demo.pkg.tar.zst", PathB64: "ZGVtby5wa2cudGFyLnpzdA==", Kind: "file", SHA256: strings.Repeat("a", 64), BinaryMetadata: map[string]any{}}
+	record := brief.FileRecord{Path: "demo.pkg.tar.zst", PathB64: "ZGVtby5wa2cudGFyLnpzdA==", Kind: "file", SHA256: strings.Repeat("a", 64), BinaryMetadata: map[string]any{}}
 	report := &Report{Manifest: []map[string]any{record.ManifestValue()}}
 	digest, err := expectedArtifactHash(report, record.Path)
 	if err != nil || digest != record.SHA256 {
@@ -79,7 +73,7 @@ func TestRootOwnedPathTraversesExecuteOnlyDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := openRootOwnedComponents(fd, target, []string{"private", "active.json"}, false)
+	file, err := openRootOwnedComponentsMode(fd, target, []string{"private", "active.json"}, false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,5 +104,79 @@ func TestRootOwnedDirectoryHandleAcceptsExecuteOnlyTarget(t *testing.T) {
 	defer handle.Close()
 	if _, err := handle.Readdirnames(1); err == nil {
 		t.Fatal("path-only prepared-root handle unexpectedly allowed directory listing")
+	}
+}
+
+// The info profile is the one uncontained makepkg execution. It is safe only
+// because --help/-h/--version/-V do not source the PKGBUILD, so a package
+// cannot execute shell through this path.
+//
+// Widening the profile would create an uncontained evaluation site, so the test
+// pins the complete allowlist.
+func TestInfoProfileNeverCarriesPackageEvaluation(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"--version"}, {"-V"}} {
+		invocation, err := ClassifyInvocation(args)
+		if err != nil || invocation.Profile != "info" {
+			t.Fatalf("%v classified as %q (%v)", args, invocation.Profile, err)
+		}
+	}
+	// Anything else must not reach the uncontained path, including the same
+	// flags combined with a real build argument.
+	for _, args := range [][]string{
+		{"--version", "--noextract"},
+		{"--help", "-f"},
+		{"--printsrcinfo"},
+		{"--verifysource"},
+		{"-f"},
+	} {
+		invocation, err := ClassifyInvocation(args)
+		if err == nil && invocation.Profile == "info" {
+			t.Fatalf("%v reached the uncontained info path", args)
+		}
+	}
+}
+
+// TestMakepkgFailsFastWithoutAUserManager binds the ordering that made a real
+// first run unreadable.
+//
+// yay runs each phase as its own wrapper process and only the verify one
+// fetches. When the resource envelope was missing, verify failed with the
+// honest cause, and then the next phase - which does not fetch - found an
+// empty source directory and reported one "extractable source is absent"
+// finding per declared source. The user got the real error once, followed by a
+// full package review derived entirely from it. The derived review is the loud
+// half, so the cause was the half that got lost.
+func TestMakepkgFailsFastWithoutAUserManager(t *testing.T) {
+	// RunMakepkg loads the system configuration before anything else and returns
+	// ExitInvalidInvocation when there is none. Without this stub the test only
+	// reaches the precondition on a machine that already has Prolewatch
+	// installed - it passed on the author's box and failed on a clean one, which
+	// is the environment dependency it is meant to be testing the absence of.
+	withStateAndShare(t)
+	previousConfigPath := SystemConfigPath
+	SystemConfigPath = writeCurrentConfig(t, DefaultConfig())
+	previousManager := userManagerAvailable
+	defer func() {
+		SystemConfigPath = previousConfigPath
+		userManagerAvailable = previousManager
+	}()
+	userManagerAvailable = func() bool { return false }
+
+	stderr := captureStderr(t, func() {
+		if status := RunMakepkg(context.Background(), []string{"--nobuild"}); status != ExitExecutionFailure {
+			t.Fatalf("status=%d, want %d", status, ExitExecutionFailure)
+		}
+	})
+	if !strings.Contains(stderr, "no systemd user manager") {
+		t.Errorf("the cause is not named: %q", stderr)
+	}
+	if strings.Contains(stderr, "extractable source is absent") {
+		t.Errorf("a derived package review was printed over the cause: %q", stderr)
+	}
+
+	// --help and --version source no PKGBUILD, so they need no envelope and must
+	// keep working on a host that has none.
+	if status := RunMakepkg(context.Background(), []string{"--version"}); status != ExitOK {
+		t.Errorf("info profile status=%d, want %d", status, ExitOK)
 	}
 }

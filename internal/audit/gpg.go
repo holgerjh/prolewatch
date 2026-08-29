@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+// Yay invokes this helper with key IDs/fingerprints. Requiring 16-40 hex
+// characters excludes GPG option injection while retaining supported key forms.
 var keyRE = regexp.MustCompile(`^[0-9A-Fa-f]{16,40}$`)
 
 var gpgSandboxBinary = "/usr/bin/bwrap"
@@ -33,19 +35,23 @@ func ValidateGPGArguments(args []string) (string, []string, error) {
 	return args[0], keys, nil
 }
 func GPGSandboxCommand(keyring, action string, keys []string) []string {
-	args := []string{"--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind-try", "/etc/hosts", "/etc/hosts", "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf", "--ro-bind-try", "/etc/ssl", "/etc/ssl", "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/root", "--dir", "/gnupg", "--bind", keyring, "/gnupg", "--clearenv", "--setenv", "HOME", "/tmp", "--setenv", "GNUPGHOME", "/gnupg", "--setenv", "PATH", "/usr/bin", "/usr/bin/gpg", "--batch", "--homedir", "/gnupg", action}
+	// The shared network is needed by the allowlisted --recv-keys action; the
+	// closed action grammar prevents arbitrary network-capable GPG commands. Its
+	// writable view is limited to the dedicated public-key ring and disposable
+	// tmpfs directories, away from user homes, agent sockets, and secret keys.
+	args := []string{"--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind-try", "/etc/hosts", "/etc/hosts", "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf", "--ro-bind-try", "/etc/ssl", "/etc/ssl", "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/root", "--dir", "/gnupg", "--bind", keyring, "/gnupg", "--clearenv", "--setenv", "HOME", "/tmp", "--setenv", "GNUPGHOME", "/gnupg", "--setenv", "PATH", "/usr/bin", "/usr/bin/gpg", "--batch", "--homedir", "/gnupg", action}
 	return append(args, keys...)
 }
 func RunGPG(args []string) int {
 	action, keys, err := ValidateGPGArguments(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "prolewatch-gpg:", err)
-		return 20
+		return ExitInvalidInvocation
 	}
 	keyring := filepath.Join(StateRoot(), "gnupg-public")
 	if err := EnsurePrivateDir(keyring); err != nil {
 		fmt.Fprintln(os.Stderr, "prolewatch-gpg:", err)
-		return 20
+		return ExitInvalidInvocation
 	}
 	command := exec.Command(gpgSandboxBinary, GPGSandboxCommand(keyring, action, keys)...)
 	command.Stdin = os.Stdin
@@ -57,7 +63,7 @@ func RunGPG(args []string) int {
 			return exit.ExitCode()
 		}
 		fmt.Fprintln(os.Stderr, "prolewatch-gpg:", err)
-		return 24
+		return ExitExecutionFailure
 	}
-	return 0
+	return ExitOK
 }

@@ -4,15 +4,19 @@
   "title": "Ecosystem package installation from an install script",
   "incident": "May 2026 python-utils adoption campaign",
   "reference": "docs/aur-threat-model.md#what-has-happened",
-  "claim": "mitigated",
+  "claim": "described",
   "phase": "pre",
   "expected": {
     "decision": "block",
-    "approval_eligible": false,
+    "approval_eligible": true,
     "coverage_complete": true,
     "exact_rule_ids": false,
     "required_findings": [
-      {"rule_id": "shell-ecosystem-install", "severity": "critical", "hard_block": true}
+      {
+        "rule_id": "shell-ecosystem-install",
+        "severity": "critical",
+        "hard_block": false
+      }
     ]
   },
   "generated_files": []

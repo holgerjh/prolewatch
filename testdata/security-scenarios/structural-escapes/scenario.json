@@ -4,7 +4,7 @@
   "title": "Escaping symlink and archive member",
   "incident": "Structural input defense",
   "reference": "docs/aur-threat-model.md#technique-coverage",
-  "claim": "mitigated",
+  "claim": "enforced",
   "phase": "pre",
   "expected": {
     "decision": "block",
@@ -12,12 +12,27 @@
     "coverage_complete": true,
     "exact_rule_ids": false,
     "required_findings": [
-      {"rule_id": "symlink-escape", "severity": "critical", "hard_block": true},
-      {"rule_id": "archive-escape", "severity": "critical", "hard_block": true}
+      {
+        "rule_id": "symlink-escape",
+        "severity": "critical",
+        "hard_block": true
+      },
+      {
+        "rule_id": "archive-escape",
+        "severity": "critical",
+        "hard_block": true
+      }
     ]
   },
   "generated_files": [
-    {"path": "bad-link", "kind": "escaping-symlink", "target": "../outside"},
-    {"path": "payload.tar", "kind": "traversal-tar"}
+    {
+      "path": "bad-link",
+      "kind": "escaping-symlink",
+      "target": "../outside"
+    },
+    {
+      "path": "payload.tar",
+      "kind": "traversal-tar"
+    }
   ]
 }

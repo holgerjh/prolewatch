@@ -12,6 +12,8 @@ import (
 
 // RunCLI parses and runs the deterministic security scenario acceptance suite.
 func RunCLI(args []string, stdout, stderr io.Writer) int {
+	// Scenario CLI exit codes follow ordinary test-runner convention (0 pass,
+	// 1 scenario/runtime failure, 2 usage), not Prolewatch's yay gate exit codes.
 	flags := flag.NewFlagSet("security-scenarios", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", "testdata/security-scenarios", "security scenario corpus root")

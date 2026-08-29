@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+umask 022
 
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 version=${1:?usage: package-release.sh VERSION ARCH BUILD_DIR DIST_DIR}
@@ -14,17 +15,17 @@ mkdir -p -- "${dist_dir}"
 temporary=$(mktemp "${dist_dir}/.prolewatch-release.XXXXXX")
 trap 'rm -f -- "${temporary}"' EXIT
 
-binaries=(prolewatch prolewatch-makepkg prolewatch-gpg provider-dispatch prolewatch-net prolewatch-build-dispatch)
+binaries=(prolewatch prolewatch-makepkg prolewatch-gpg prolewatch-net)
 for name in "${binaries[@]}"; do
-  test -x "${build_dir}/${name}"
-  cp -- "${build_dir}/${name}" "${dist_dir}/${name}-linux-${target_arch}"
+  [[ -f ${build_dir}/${name} && -x ${build_dir}/${name} && ! -L ${build_dir}/${name} ]]
+  install -m 0755 -- "${build_dir}/${name}" "${dist_dir}/${name}-linux-${target_arch}"
 done
 
 tar --sort=name --format=posix --pax-option=delete=atime,delete=ctime --mtime="@${epoch}" \
-  --owner=0 --group=0 --numeric-owner -C "${build_dir}" -cf - "${binaries[@]}" \
-  -C "${project_dir}" README.md LICENSE NOTICE THIRD_PARTY_NOTICES COMMERCIAL-LICENSE.md CONTRIBUTING.md SECURITY.md \
+  --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -C "${build_dir}" -cf - "${binaries[@]}" \
+  -C "${project_dir}" README.md LICENSE NOTICE THIRD_PARTY_NOTICES CONTRIBUTING.md SECURITY.md \
   ARTWORK-LICENSE.md \
-  docs scripts/install-system.sh scripts/uninstall-system.sh share \
+  docs share \
   | gzip -n >"${temporary}"
 chmod 0644 "${temporary}"
 mv -- "${temporary}" "${archive}"

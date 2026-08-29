@@ -5,26 +5,49 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/holgerjh/prolewatch/internal/brief"
+	"github.com/holgerjh/prolewatch/internal/egress"
+	"github.com/holgerjh/prolewatch/internal/safe"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
 const (
-	ApplicationVersion    = "0.10.0"
-	ReportSchemaVersion   = 8
-	MarkerSchemaVersion   = 7
-	ApprovalSchemaVersion = 6
+	// Schema/behavior versions participate in stored evidence and policy
+	// identity. Increment the relevant value when its interpretation changes.
+	ApplicationVersion    = "0.11.0"
+	ReportSchemaVersion   = 14
+	MarkerSchemaVersion   = 8
+	ApprovalSchemaVersion = 7
 	ScannerVersion        = 8
-	RulesVersion          = 12
-	ReviewSnapshotVersion = 6
+	RulesVersion          = 13
+	ReviewSnapshotVersion = 8
 	MinYayVersion         = "13.0.1"
-	MinCodexVersion       = "0.146.1"
-	MaxCodexVersion       = "0.147.0"
-	MinClaudeVersion      = "2.1.205"
-	MaxClaudeVersion      = "3.0.0"
+	// MaxYayVersion is the first yay release the makepkg wrapper has not been
+	// checked against. It is a warning boundary, not a refusal: interception is
+	// two `yay.opt` assignments and a closed classification of the makepkg
+	// command lines yay produces. Yay rejects unknown options during full config
+	// validation, and doctor separately verifies the effective wrapper paths; the
+	// upper bound therefore warns about untested invocation shapes.
+	MaxYayVersion   = "14.0.0"
+	MinCodexVersion = "0.146.1"
+	// MaxCodexVersion is the first Codex release the adapter has not been
+	// checked against. Like MaxYayVersion it warns rather than refuses: the CLI
+	// ships far faster than this adapter is re-verified, and every way a newer
+	// Codex could actually break the adapter already fails closed. `codex
+	// features list` must still parse, `--strict-config` rejects an option the
+	// CLI no longer knows, the answer must satisfy the verdict schema, and
+	// containment is Prolewatch's own bubblewrap sandbox rather than Codex's
+	// `--sandbox` flag. Refusing to run the day Arch ships a new Codex would
+	// cost more than the refusal buys.
+	MaxCodexVersion  = "0.150.0"
+	MinClaudeVersion = "2.1.205"
+	MaxClaudeVersion = "3.0.0"
 )
 
 const (
@@ -34,7 +57,27 @@ const (
 	TerminalStylePlain          = "plain"
 )
 
-const systemConfigDefaultPath = "/etc/prolewatch/config.json"
+const (
+	systemConfigDefaultPath       = "/etc/prolewatch/config.json"
+	maxConfigDocumentBytes        = 1 << 20
+	maxProviderModelBytes         = 256
+	maxNetworkDestinations        = 64
+	maxNetworkConnections         = 256
+	maxPromptTimeoutSeconds       = 3_600
+	maxNetworkConnectSeconds      = 300
+	maxNetworkIdleSeconds         = 3_600
+	defaultReviewTimeoutSeconds   = 180
+	defaultReviewKillGraceSeconds = 5
+	defaultReviewBatchBytes       = 768_000
+	defaultBuildMemoryBytes       = 8 << 30
+	defaultBuildCPUCount          = 4
+	defaultBuildTasks             = 512
+	defaultBuildTimeoutSeconds    = 2 * 60 * 60
+	defaultWorkspaceBytes         = 16 << 30
+	defaultWorkspaceFiles         = 500_000
+	defaultBuildOutputBytes       = 32 << 20
+	defaultBuildDiskReserveBytes  = 2 << 30
+)
 
 var SystemConfigPath = systemConfigDefaultPath
 
@@ -49,121 +92,31 @@ type ProvidersConfig struct {
 }
 
 type ReviewConfig struct {
-	Mode              string `json:"mode"`
-	MinimumConfidence string `json:"minimum_confidence"`
-	TimeoutSeconds    int    `json:"timeout_seconds"`
-	KillGraceSeconds  int    `json:"kill_grace_seconds"`
-	BatchBytes        int    `json:"batch_bytes"`
-}
-
-type legacyReviewConfig struct {
-	TimeoutSeconds   int `json:"timeout_seconds"`
-	KillGraceSeconds int `json:"kill_grace_seconds"`
-	BatchBytes       int `json:"batch_bytes"`
-}
-
-type legacyModeReviewConfig struct {
-	Mode             string `json:"mode"`
-	TimeoutSeconds   int    `json:"timeout_seconds"`
-	KillGraceSeconds int    `json:"kill_grace_seconds"`
-	BatchBytes       int    `json:"batch_bytes"`
-}
-
-type legacyPreModeReviewConfig struct {
-	MinimumConfidence string `json:"minimum_confidence"`
-	TimeoutSeconds    int    `json:"timeout_seconds"`
-	KillGraceSeconds  int    `json:"kill_grace_seconds"`
-	BatchBytes        int    `json:"batch_bytes"`
-}
-
-type LimitsConfig struct {
-	MaxDispatchBytes        int64 `json:"max_dispatch_bytes"`
-	MaxFiles                int   `json:"max_files"`
-	MaxTotalInputBytes      int64 `json:"max_total_input_bytes"`
-	MaxArchives             int   `json:"max_archives"`
-	MaxArchiveEntries       int   `json:"max_archive_entries"`
-	MaxArchiveUnpackedBytes int64 `json:"max_archive_unpacked_bytes"`
-	MaxArchiveDepth         int   `json:"max_archive_depth"`
-	MaxTextPerFile          int64 `json:"max_text_per_file"`
-	MaxSelectedTextBytes    int64 `json:"max_selected_text_bytes"`
-	BinaryStringsBytes      int64 `json:"binary_strings_bytes"`
-	MaxFindings             int   `json:"max_findings"`
-	ScanTimeoutSeconds      int   `json:"scan_timeout_seconds"`
+	Mode                        string `json:"mode"`
+	MinimumConfidence           string `json:"minimum_confidence"`
+	ManualReviewMinimumSeverity string `json:"manual_review_minimum_severity"`
+	TimeoutSeconds              int    `json:"timeout_seconds"`
+	KillGraceSeconds            int    `json:"kill_grace_seconds"`
+	BatchBytes                  int    `json:"batch_bytes"`
+	// IncludeRecipePhase adds the recipe phase to AI review. Off by default:
+	// the recipe is two small, highly structured files, which is where the
+	// deterministic rules are strongest and where the model has least to add,
+	// while every phase costs a provider round trip per package. A ten-package
+	// upgrade pays that three times over instead of twice.
+	//
+	// Deliberately a boolean that only ever adds a phase, rather than a list of
+	// phases to run. A list would be more general and would also mean a typo
+	// silently disables a gate while looking like it worked; this cannot be
+	// misconfigured into weakening anything.
+	IncludeRecipePhase bool `json:"include_recipe_phase"`
+	// GuideDecisionFindings spends a recipe-phase provider call only when the
+	// deterministic pass found evidence at the configured manual-review
+	// threshold. It is guidance, not an AI override: the deterministic decision
+	// and every finding remain intact.
+	GuideDecisionFindings bool `json:"guide_decision_findings"`
 }
 
 type BuildConfig struct {
-	MemoryBytes                    int64 `json:"memory_bytes"`
-	CPUCount                       int   `json:"cpu_count"`
-	TasksMax                       int   `json:"tasks_max"`
-	TimeoutSeconds                 int   `json:"timeout_seconds"`
-	WorkspaceBytes                 int64 `json:"workspace_bytes"`
-	WorkspaceFiles                 int   `json:"workspace_files"`
-	OutputBytes                    int64 `json:"output_bytes"`
-	DiskReserveBytes               int64 `json:"disk_reserve_bytes"`
-	CleanRootPrepareTimeoutSeconds int   `json:"clean_root_prepare_timeout_seconds"`
-	CleanRootBytes                 int64 `json:"clean_root_bytes"`
-	CleanRootCacheBytes            int64 `json:"clean_root_cache_bytes"`
-	CleanRootMaxPrepared           int   `json:"clean_root_max_prepared"`
-}
-
-type NetworkConfig struct {
-	AutoEnableKnownTools  bool  `json:"auto_enable_known_tools"`
-	MaxConnections        int   `json:"max_connections"`
-	ConnectTimeoutSeconds int   `json:"connect_timeout_seconds"`
-	IdleTimeoutSeconds    int   `json:"idle_timeout_seconds"`
-	MaxTransferBytes      int64 `json:"max_transfer_bytes"`
-}
-
-type SandboxConfig struct {
-	ReadOnlyPaths []string `json:"read_only_paths"`
-}
-
-type VendorConfig struct {
-	ScanDepth int `json:"scan_depth"`
-}
-
-type OverridesConfig struct {
-	AllowUnsafe bool `json:"allow_unsafe"`
-}
-
-// TerminalConfig affects presentation only. It is deliberately excluded from
-// the policy fingerprint so changing terminal decoration cannot invalidate a
-// reviewed package snapshot.
-type TerminalConfig struct {
-	Style string `json:"style"`
-}
-
-type Config struct {
-	Provider  string          `json:"provider"`
-	Providers ProvidersConfig `json:"providers"`
-	Review    ReviewConfig    `json:"review"`
-	Limits    LimitsConfig    `json:"limits"`
-	Build     BuildConfig     `json:"build"`
-	Network   NetworkConfig   `json:"network"`
-	Sandbox   SandboxConfig   `json:"sandbox"`
-	Vendor    VendorConfig    `json:"vendor"`
-	Overrides OverridesConfig `json:"overrides"`
-	Terminal  TerminalConfig  `json:"terminal"`
-}
-
-type legacyLimitsConfig struct {
-	MaxDispatchBytes        int64 `json:"max_dispatch_bytes"`
-	MaxArchiveEntries       int   `json:"max_archive_entries"`
-	MaxArchiveUnpackedBytes int64 `json:"max_archive_unpacked_bytes"`
-	MaxArchiveDepth         int   `json:"max_archive_depth"`
-	MaxTextPerFile          int64 `json:"max_text_per_file"`
-	MaxSelectedTextBytes    int64 `json:"max_selected_text_bytes"`
-	BinaryStringsBytes      int64 `json:"binary_strings_bytes"`
-}
-
-type legacyConfigV3 struct {
-	Provider  string             `json:"provider"`
-	Providers ProvidersConfig    `json:"providers"`
-	Review    legacyReviewConfig `json:"review"`
-	Limits    legacyLimitsConfig `json:"limits"`
-}
-
-type legacyBuildConfigV4 struct {
 	MemoryBytes      int64 `json:"memory_bytes"`
 	CPUCount         int   `json:"cpu_count"`
 	TasksMax         int   `json:"tasks_max"`
@@ -174,87 +127,43 @@ type legacyBuildConfigV4 struct {
 	DiskReserveBytes int64 `json:"disk_reserve_bytes"`
 }
 
-type legacyConfigV4 struct {
-	Provider  string              `json:"provider"`
-	Providers ProvidersConfig     `json:"providers"`
-	Review    legacyReviewConfig  `json:"review"`
-	Limits    LimitsConfig        `json:"limits"`
-	Build     legacyBuildConfigV4 `json:"build"`
-	Network   NetworkConfig       `json:"network"`
-	Sandbox   SandboxConfig       `json:"sandbox"`
+// TerminalConfig affects presentation only. It is deliberately excluded from
+// the policy fingerprint so changing terminal decoration cannot invalidate a
+// reviewed package snapshot.
+type TerminalConfig struct {
+	Style string `json:"style"`
 }
 
-type legacyConfigV5 struct {
+type Config struct {
 	Provider  string             `json:"provider"`
 	Providers ProvidersConfig    `json:"providers"`
-	Review    legacyReviewConfig `json:"review"`
-	Limits    LimitsConfig       `json:"limits"`
+	Review    ReviewConfig       `json:"review"`
+	Limits    brief.LimitsConfig `json:"limits"`
 	Build     BuildConfig        `json:"build"`
-	Network   NetworkConfig      `json:"network"`
-	Sandbox   SandboxConfig      `json:"sandbox"`
-}
-
-// legacyConfigV6 is the complete configuration shipped immediately before
-// minimum_confidence and the break-glass override policy were introduced.
-type legacyConfigV6 struct {
-	Provider  string                 `json:"provider"`
-	Providers ProvidersConfig        `json:"providers"`
-	Review    legacyModeReviewConfig `json:"review"`
-	Limits    LimitsConfig           `json:"limits"`
-	Build     BuildConfig            `json:"build"`
-	Network   NetworkConfig          `json:"network"`
-	Sandbox   SandboxConfig          `json:"sandbox"`
-}
-
-type legacyConfigWithoutOverrides struct {
-	Provider  string          `json:"provider"`
-	Providers ProvidersConfig `json:"providers"`
-	Review    ReviewConfig    `json:"review"`
-	Limits    LimitsConfig    `json:"limits"`
-	Build     BuildConfig     `json:"build"`
-	Network   NetworkConfig   `json:"network"`
-	Sandbox   SandboxConfig   `json:"sandbox"`
-}
-
-type legacyConfigPreMode struct {
-	Provider  string                    `json:"provider"`
-	Providers ProvidersConfig           `json:"providers"`
-	Review    legacyPreModeReviewConfig `json:"review"`
-	Limits    LimitsConfig              `json:"limits"`
-	Build     BuildConfig               `json:"build"`
-	Network   NetworkConfig             `json:"network"`
-	Sandbox   SandboxConfig             `json:"sandbox"`
-	Vendor    VendorConfig              `json:"vendor"`
-	Overrides OverridesConfig           `json:"overrides"`
-	Terminal  TerminalConfig            `json:"terminal"`
+	Network   egress.Config      `json:"network"`
+	Vendor    brief.VendorConfig `json:"vendor"`
+	Terminal  TerminalConfig     `json:"terminal"`
 }
 
 func DefaultConfig() Config {
+	// Defaults balance an ordinary source build against bounded hostile input:
+	// scan/archive ceilings constrain parsing, build ceilings constrain the
+	// sandbox, and network ceilings apply independently to the prompt broker.
+	briefDefaults := brief.DefaultConfig()
 	return Config{
 		Provider: "codex",
 		Providers: ProvidersConfig{
 			Codex:     ProviderConfig{Model: "gpt-5.6-sol", Effort: "high"},
 			Anthropic: ProviderConfig{Model: "sonnet", Effort: "high"},
 		},
-		Review: ReviewConfig{Mode: ReviewModeAI, MinimumConfidence: "high", TimeoutSeconds: 180, KillGraceSeconds: 5, BatchBytes: 768000},
-		Limits: LimitsConfig{
-			MaxDispatchBytes: 20 * 1024 * 1024, MaxFiles: 200000, MaxTotalInputBytes: 16 * 1024 * 1024 * 1024,
-			MaxArchives: 1024, MaxArchiveEntries: 100000,
-			MaxArchiveUnpackedBytes: 2 * 1024 * 1024 * 1024, MaxArchiveDepth: 4,
-			MaxTextPerFile: 4 * 1024 * 1024, MaxSelectedTextBytes: 16 * 1024 * 1024,
-			BinaryStringsBytes: 128 * 1024, MaxFindings: 10000, ScanTimeoutSeconds: 300,
-		},
-		Build: BuildConfig{MemoryBytes: 8 * 1024 * 1024 * 1024, CPUCount: 4, TasksMax: 512,
-			TimeoutSeconds: 2 * 60 * 60, WorkspaceBytes: 16 * 1024 * 1024 * 1024,
-			WorkspaceFiles: 500000, OutputBytes: 32 * 1024 * 1024, DiskReserveBytes: 2 * 1024 * 1024 * 1024,
-			CleanRootPrepareTimeoutSeconds: 15 * 60, CleanRootBytes: 32 * 1024 * 1024 * 1024,
-			CleanRootCacheBytes: 16 * 1024 * 1024 * 1024, CleanRootMaxPrepared: 2},
-		Network: NetworkConfig{AutoEnableKnownTools: true, MaxConnections: 32, ConnectTimeoutSeconds: 15, IdleTimeoutSeconds: 60,
-			MaxTransferBytes: 8 * 1024 * 1024 * 1024},
-		Sandbox:   SandboxConfig{ReadOnlyPaths: []string{}},
-		Vendor:    VendorConfig{ScanDepth: 0},
-		Overrides: OverridesConfig{AllowUnsafe: false},
-		Terminal:  TerminalConfig{Style: TerminalStyleBrand},
+		Review: ReviewConfig{Mode: ReviewModeDeterministicOnly, MinimumConfidence: "high", ManualReviewMinimumSeverity: "high", TimeoutSeconds: defaultReviewTimeoutSeconds, KillGraceSeconds: defaultReviewKillGraceSeconds, BatchBytes: defaultReviewBatchBytes, GuideDecisionFindings: true},
+		Limits: briefDefaults.Limits,
+		Build: BuildConfig{MemoryBytes: defaultBuildMemoryBytes, CPUCount: defaultBuildCPUCount, TasksMax: defaultBuildTasks,
+			TimeoutSeconds: defaultBuildTimeoutSeconds, WorkspaceBytes: defaultWorkspaceBytes,
+			WorkspaceFiles: defaultWorkspaceFiles, OutputBytes: defaultBuildOutputBytes, DiskReserveBytes: defaultBuildDiskReserveBytes},
+		Network:  egress.DefaultConfig(),
+		Vendor:   briefDefaults.Vendor,
+		Terminal: TerminalConfig{Style: TerminalStyleBrand},
 	}
 }
 
@@ -264,7 +173,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 	raw, err := readConfig(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read configuration %s: %w", path, err)
+		return Config{}, fmt.Errorf("read configuration %s: %w%s", path, err, missingConfigAdvice(path, err))
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -272,22 +181,9 @@ func LoadConfig(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse configuration %s: %w", path, err)
 	}
-	// This setting was introduced with a default-on compatibility policy. A
-	// missing key therefore means true, while an explicit false remains a
-	// deliberate administrator choice.
-	var presence struct {
-		Network struct {
-			AutoEnableKnownTools *bool `json:"auto_enable_known_tools"`
-		} `json:"network"`
-	}
-	if err := json.Unmarshal(raw, &presence); err != nil {
-		return Config{}, fmt.Errorf("parse network configuration presence: %w", err)
-	}
-	if presence.Network.AutoEnableKnownTools == nil {
-		cfg.Network.AutoEnableKnownTools = true
-	}
-	// Configurations written before terminal styling existed remain current and
-	// pick up the safe presentation default without entering a legacy migration.
+	cfg.Network = normalizeNetworkConfig(cfg.Network)
+	// A missing presentation-only style uses the safe default without requiring
+	// a schema migration.
 	if cfg.Terminal.Style == "" {
 		cfg.Terminal.Style = TerminalStyleBrand
 	}
@@ -301,84 +197,60 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
-func MigrateConfig(path string) (Config, error) {
-	if cfg, err := LoadConfig(path); err == nil {
-		return cfg, nil
+// missingConfigAdvice gives protected commands a concrete repair for an absent
+// system policy file.
+func missingConfigAdvice(path string, cause error) string {
+	if !errors.Is(cause, fs.ErrNotExist) || filepath.Clean(path) != systemConfigDefaultPath {
+		return ""
 	}
-	raw, err := readConfig(path)
-	if err != nil {
-		return Config{}, err
+	shipped := filepath.Join(ShareRoot(), "default-config.json")
+	if info, err := os.Stat(shipped); err != nil || !info.Mode().IsRegular() {
+		return ""
 	}
-	var withoutOverrides legacyConfigWithoutOverrides
-	if err := DecodeStrict(raw, &withoutOverrides); err == nil && withoutOverrides.Build.CleanRootBytes > 0 && withoutOverrides.Limits.MaxFiles > 0 && validConfidence(withoutOverrides.Review.MinimumConfidence) {
-		cfg := DefaultConfig()
-		cfg.Provider, cfg.Providers, cfg.Review, cfg.Limits, cfg.Build, cfg.Network, cfg.Sandbox = withoutOverrides.Provider, withoutOverrides.Providers, withoutOverrides.Review, withoutOverrides.Limits, withoutOverrides.Build, withoutOverrides.Network, withoutOverrides.Sandbox
-		cfg.Network.AutoEnableKnownTools = true
-		return cfg, cfg.Validate()
-	}
-	var v6 legacyConfigV6
-	if err := DecodeStrict(raw, &v6); err == nil && v6.Build.CleanRootBytes > 0 && v6.Limits.MaxFiles > 0 {
-		cfg := DefaultConfig()
-		cfg.Provider, cfg.Providers, cfg.Limits, cfg.Build, cfg.Network, cfg.Sandbox = v6.Provider, v6.Providers, v6.Limits, v6.Build, v6.Network, v6.Sandbox
-		cfg.Network.AutoEnableKnownTools = true
-		cfg.Review = ReviewConfig{Mode: v6.Review.Mode, MinimumConfidence: "high", TimeoutSeconds: v6.Review.TimeoutSeconds, KillGraceSeconds: v6.Review.KillGraceSeconds, BatchBytes: v6.Review.BatchBytes}
-		return cfg, cfg.Validate()
-	}
-	var preMode legacyConfigPreMode
-	if err := DecodeStrict(raw, &preMode); err == nil && preMode.Build.CleanRootBytes > 0 && preMode.Limits.MaxFiles > 0 && validConfidence(preMode.Review.MinimumConfidence) {
-		cfg := DefaultConfig()
-		cfg.Provider, cfg.Providers, cfg.Limits, cfg.Build, cfg.Network, cfg.Sandbox, cfg.Vendor, cfg.Overrides = preMode.Provider, preMode.Providers, preMode.Limits, preMode.Build, preMode.Network, preMode.Sandbox, preMode.Vendor, preMode.Overrides
-		cfg.Network.AutoEnableKnownTools = true
-		if preMode.Terminal.Style != "" {
-			cfg.Terminal = preMode.Terminal
-		}
-		cfg.Review = ReviewConfig{Mode: ReviewModeAI, MinimumConfidence: preMode.Review.MinimumConfidence, TimeoutSeconds: preMode.Review.TimeoutSeconds, KillGraceSeconds: preMode.Review.KillGraceSeconds, BatchBytes: preMode.Review.BatchBytes}
-		return cfg, cfg.Validate()
-	}
-	var v5 legacyConfigV5
-	if err := DecodeStrict(raw, &v5); err == nil && v5.Build.CleanRootBytes > 0 && v5.Limits.MaxFiles > 0 {
-		cfg := DefaultConfig()
-		cfg.Provider, cfg.Providers, cfg.Limits, cfg.Build, cfg.Network, cfg.Sandbox = v5.Provider, v5.Providers, v5.Limits, v5.Build, v5.Network, v5.Sandbox
-		cfg.Network.AutoEnableKnownTools = true
-		cfg.Review = migrateLegacyReview(v5.Review)
-		return cfg, cfg.Validate()
-	}
-	var v4 legacyConfigV4
-	if err := DecodeStrict(raw, &v4); err == nil && v4.Build.MemoryBytes > 0 && v4.Limits.MaxFiles > 0 {
-		if len(v4.Sandbox.ReadOnlyPaths) > 0 {
-			return Config{}, errors.New("sandbox.read_only_paths cannot be migrated because clean roots no longer expose host paths")
-		}
-		cfg := DefaultConfig()
-		cfg.Provider, cfg.Providers, cfg.Limits, cfg.Network = v4.Provider, v4.Providers, v4.Limits, v4.Network
-		cfg.Network.AutoEnableKnownTools = true
-		cfg.Review = migrateLegacyReview(v4.Review)
-		cfg.Build.MemoryBytes, cfg.Build.CPUCount, cfg.Build.TasksMax = v4.Build.MemoryBytes, v4.Build.CPUCount, v4.Build.TasksMax
-		cfg.Build.TimeoutSeconds, cfg.Build.WorkspaceBytes, cfg.Build.WorkspaceFiles = v4.Build.TimeoutSeconds, v4.Build.WorkspaceBytes, v4.Build.WorkspaceFiles
-		cfg.Build.OutputBytes, cfg.Build.DiskReserveBytes = v4.Build.OutputBytes, v4.Build.DiskReserveBytes
-		return cfg, cfg.Validate()
-	}
-	var legacy legacyConfigV3
-	if err := DecodeStrict(raw, &legacy); err != nil {
-		return Config{}, fmt.Errorf("configuration is neither current nor a supported legacy schema: %w", err)
-	}
-	cfg := DefaultConfig()
-	cfg.Provider, cfg.Providers = legacy.Provider, legacy.Providers
-	cfg.Review = migrateLegacyReview(legacy.Review)
-	cfg.Limits.MaxDispatchBytes = legacy.Limits.MaxDispatchBytes
-	cfg.Limits.MaxArchiveEntries = legacy.Limits.MaxArchiveEntries
-	cfg.Limits.MaxArchiveUnpackedBytes = legacy.Limits.MaxArchiveUnpackedBytes
-	cfg.Limits.MaxArchiveDepth = legacy.Limits.MaxArchiveDepth
-	cfg.Limits.MaxTextPerFile = legacy.Limits.MaxTextPerFile
-	cfg.Limits.MaxSelectedTextBytes = legacy.Limits.MaxSelectedTextBytes
-	cfg.Limits.BinaryStringsBytes = legacy.Limits.BinaryStringsBytes
-	return cfg, cfg.Validate()
+	return fmt.Sprintf("\n\nInstall the shipped default:\n    sudo install -Dm0644 %s %s", shipped, systemConfigDefaultPath)
 }
 
-func migrateLegacyReview(review legacyReviewConfig) ReviewConfig {
-	return ReviewConfig{Mode: ReviewModeAI, MinimumConfidence: "high", TimeoutSeconds: review.TimeoutSeconds, KillGraceSeconds: review.KillGraceSeconds, BatchBytes: review.BatchBytes}
+func normalizeNetworkConfig(network egress.Config) egress.Config {
+	defaults := DefaultConfig().Network
+	if network.Mode == "" {
+		network.Mode = defaults.Mode
+	}
+	if network.PromptTimeoutSeconds == 0 {
+		network.PromptTimeoutSeconds = defaults.PromptTimeoutSeconds
+	}
+	if network.GrantScope == "" {
+		network.GrantScope = defaults.GrantScope
+	}
+	if network.MaxDestinations == 0 {
+		network.MaxDestinations = defaults.MaxDestinations
+	}
+	if network.MaxRequests == 0 {
+		network.MaxRequests = defaults.MaxRequests
+	}
+	// These values bound trusted-side acquisition rather than the prompt. Missing
+	// values receive finite defaults so every call site enforces aggregate limits.
+	if network.MaxConnections == 0 {
+		network.MaxConnections = defaults.MaxConnections
+	}
+	if network.ConnectTimeoutSeconds == 0 {
+		network.ConnectTimeoutSeconds = defaults.ConnectTimeoutSeconds
+	}
+	if network.IdleTimeoutSeconds == 0 {
+		network.IdleTimeoutSeconds = defaults.IdleTimeoutSeconds
+	}
+	if network.MaxTransferBytes == 0 {
+		network.MaxTransferBytes = defaults.MaxTransferBytes
+	}
+	if network.DiskReserveBytes == 0 {
+		network.DiskReserveBytes = defaults.DiskReserveBytes
+	}
+	return network
 }
 
 func readConfig(path string) ([]byte, error) {
+	// One MiB is a hard document budget, not a configurable policy. Open with
+	// O_NOFOLLOW and compare metadata before/after reading to reject symlink and
+	// replacement races at the policy boundary.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
@@ -389,20 +261,20 @@ func readConfig(path string) ([]byte, error) {
 	if err := unix.Fstat(fd, &before); err != nil {
 		return nil, err
 	}
-	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size < 0 || before.Size > 1024*1024 || before.Mode&0o022 != 0 {
+	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size < 0 || before.Size > maxConfigDocumentBytes || before.Mode&0o022 != 0 {
 		return nil, errors.New("configuration is not a safe regular file")
 	}
 	if filepath.Clean(path) == systemConfigDefaultPath && before.Uid != 0 {
 		return nil, errors.New("system configuration is not root-owned")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, 1024*1024+1))
-	if err != nil || len(raw) > 1024*1024 {
+	raw, err := io.ReadAll(io.LimitReader(file, maxConfigDocumentBytes+1))
+	if err != nil || len(raw) > maxConfigDocumentBytes {
 		return nil, errors.New("configuration exceeds its read limit")
 	}
 	if err := unix.Fstat(fd, &after); err != nil {
 		return nil, err
 	}
-	if !sameStat(before, after) || int64(len(raw)) != after.Size {
+	if !safe.SameStat(before, after) || int64(len(raw)) != after.Size {
 		return nil, errors.New("configuration changed while reading")
 	}
 	return raw, nil
@@ -416,6 +288,8 @@ func (c Config) ActiveProvider() ProviderConfig {
 }
 
 func (c Config) Validate() error {
+	// Validate relationships as well as positivity: inner operations must fit
+	// inside aggregate budgets and unsupported broad-access options stay disabled.
 	if c.Terminal.Style != TerminalStyleBrand && c.Terminal.Style != TerminalStylePlain {
 		return fmt.Errorf("unsupported terminal style %q", c.Terminal.Style)
 	}
@@ -425,12 +299,15 @@ func (c Config) Validate() error {
 	if !validConfidence(c.Review.MinimumConfidence) {
 		return fmt.Errorf("unsupported minimum review confidence %q", c.Review.MinimumConfidence)
 	}
+	if !brief.ValidSeverity(c.Review.ManualReviewMinimumSeverity) {
+		return fmt.Errorf("unsupported manual review minimum severity %q", c.Review.ManualReviewMinimumSeverity)
+	}
 	if c.Provider != "codex" && c.Provider != "anthropic" {
 		return fmt.Errorf("unsupported provider %q", c.Provider)
 	}
 	for name, p := range map[string]ProviderConfig{"codex": c.Providers.Codex, "anthropic": c.Providers.Anthropic} {
-		if p.Model == "" || len(p.Model) > 256 {
-			return fmt.Errorf("providers.%s.model must be non-empty and at most 256 bytes", name)
+		if p.Model == "" || len(p.Model) > maxProviderModelBytes {
+			return fmt.Errorf("providers.%s.model must be non-empty and at most %d bytes", name, maxProviderModelBytes)
 		}
 		if !validEffort(p.Effort) {
 			return fmt.Errorf("providers.%s.effort is unsupported", name)
@@ -446,9 +323,9 @@ func (c Config) Validate() error {
 		c.Limits.BinaryStringsBytes, int64(c.Limits.MaxFindings), int64(c.Limits.ScanTimeoutSeconds),
 		c.Build.MemoryBytes, int64(c.Build.CPUCount), int64(c.Build.TasksMax), int64(c.Build.TimeoutSeconds),
 		c.Build.WorkspaceBytes, int64(c.Build.WorkspaceFiles), c.Build.OutputBytes, c.Build.DiskReserveBytes,
-		int64(c.Build.CleanRootPrepareTimeoutSeconds), c.Build.CleanRootBytes, c.Build.CleanRootCacheBytes, int64(c.Build.CleanRootMaxPrepared),
 		int64(c.Network.MaxConnections), int64(c.Network.ConnectTimeoutSeconds), int64(c.Network.IdleTimeoutSeconds),
-		c.Network.MaxTransferBytes,
+		c.Network.MaxTransferBytes, int64(c.Network.PromptTimeoutSeconds), int64(c.Network.MaxDestinations),
+		int64(c.Network.MaxRequests),
 	}
 	for _, value := range limits {
 		if value <= 0 {
@@ -470,17 +347,32 @@ func (c Config) Validate() error {
 	if c.Build.DiskReserveBytes >= c.Build.WorkspaceBytes {
 		return errors.New("build.disk_reserve_bytes must be smaller than build.workspace_bytes")
 	}
-	if len(c.Sandbox.ReadOnlyPaths) != 0 {
-		return errors.New("sandbox.read_only_paths is unsupported with mandatory clean roots")
-	}
-	if c.Build.CleanRootCacheBytes >= c.Build.CleanRootBytes || c.Build.CleanRootMaxPrepared > 32 {
-		return errors.New("clean-root limits are inconsistent")
+	if c.Network.Mode != "prompt" || c.Network.GrantScope != "transaction" || c.Network.MaxDestinations > maxNetworkDestinations || c.Network.MaxRequests > egress.MaximumMaxRequests ||
+		c.Network.MaxConnections > maxNetworkConnections || c.Network.PromptTimeoutSeconds > maxPromptTimeoutSeconds ||
+		c.Network.ConnectTimeoutSeconds > maxNetworkConnectSeconds || c.Network.IdleTimeoutSeconds > maxNetworkIdleSeconds {
+		return errors.New("network policy must use phase-scoped interactive prompts")
 	}
 	return nil
 }
 
 func validConfidence(value string) bool {
 	return value == "low" || value == "medium" || value == "high"
+}
+
+func severityAtLeast(actual, minimum string) bool {
+	rank := map[string]int{"info": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
+	return rank[actual] >= rank[minimum] && rank[minimum] != 0
+}
+
+func decisionSeverityLabel(minimum string) string {
+	if minimum == "high" {
+		return "HIGH/CRITICAL"
+	}
+	label := strings.ToUpper(minimum)
+	if minimum != "critical" {
+		label += "+"
+	}
+	return label
 }
 
 func validEffort(value string) bool {
@@ -493,6 +385,8 @@ func validEffort(value string) bool {
 }
 
 func StateRoot() string {
+	// User-owned reports and approvals follow XDG state placement;
+	// this path is never used for root-service authority.
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {
 		return filepath.Join(value, "prolewatch")
 	}
@@ -511,4 +405,16 @@ func ShareRoot() string {
 		return value
 	}
 	return "/usr/share/prolewatch"
+}
+
+// briefConfig narrows the umbrella configuration to what the inspection layer
+// is allowed to see. The scanner parses hostile archives; it has no business
+// being able to reach provider credentials, build limits, or terminal styling,
+// and passing the whole Config would have made that reachable by accident.
+func BriefConfig(cfg Config) brief.Config {
+	return brief.Config{
+		Limits:              cfg.Limits,
+		Vendor:              cfg.Vendor,
+		RetainTextForReview: cfg.Review.Mode != ReviewModeDeterministicOnly,
+	}
 }

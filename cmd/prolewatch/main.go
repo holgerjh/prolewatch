@@ -19,6 +19,8 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	// The scenario command accepts explicit streams for hermetic acceptance
+	// output; the regular CLI owns its terminal presentation internally.
 	if len(args) > 0 && args[0] == "security-scenarios" {
 		return scenarios.RunCLI(args[1:], stdout, stderr)
 	}

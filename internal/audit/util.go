@@ -1,24 +1,19 @@
 package audit
 
 import (
-	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/holgerjh/prolewatch/internal/safe"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,73 +21,18 @@ import (
 var packageBaseRE = regexp.MustCompile(`^[A-Za-z0-9@._+][A-Za-z0-9@._+-]*$`)
 var reportIDRE = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}-[0-9a-f]{8}$`)
 
-func bytesReader(value []byte) *bytes.Reader { return bytes.NewReader(value) }
+type limitedBuffer = safe.LimitedBuffer
 
-type limitedBuffer struct {
-	buffer bytes.Buffer
-	limit  int64
-}
+func newLimitedBuffer(limit int64) *limitedBuffer { return safe.NewLimitedBuffer(limit) }
 
-func newLimitedBuffer(limit int64) *limitedBuffer { return &limitedBuffer{limit: limit} }
-func (b *limitedBuffer) Write(value []byte) (int, error) {
-	if b.limit <= 0 || int64(len(value)) > b.limit-int64(b.buffer.Len()) {
-		return 0, errors.New("subprocess output exceeds hard limit")
-	}
-	return b.buffer.Write(value)
-}
-func (b *limitedBuffer) Bytes() []byte  { return b.buffer.Bytes() }
-func (b *limitedBuffer) String() string { return b.buffer.String() }
-
-// contentValidator validates a byte stream without retaining it. It deliberately
-// carries an incomplete UTF-8 rune across Write calls so chunk boundaries cannot
-// turn malformed control content into apparently valid text.
-type contentValidator struct {
-	carry   []byte
-	NUL     bool
-	Invalid bool
-}
-
-func (v *contentValidator) Write(value []byte) (int, error) {
-	original := len(value)
-	if bytes.IndexByte(value, 0) >= 0 {
-		v.NUL = true
-	}
-	data := append(append([]byte(nil), v.carry...), value...)
-	v.carry = v.carry[:0]
-	for len(data) > 0 {
-		if !utf8.FullRune(data) {
-			v.carry = append(v.carry, data...)
-			break
-		}
-		r, size := utf8.DecodeRune(data)
-		if r == utf8.RuneError && size == 1 {
-			v.Invalid = true
-		}
-		data = data[size:]
-	}
-	return original, nil
-}
-
-func (v *contentValidator) Finish() {
-	if len(v.carry) > 0 {
-		v.Invalid = true
-	}
-}
-
-func CanonicalJSON(value any) ([]byte, error) {
-	// encoding/json sorts string map keys and emits stable compact JSON.
-	return json.Marshal(value)
-}
-
-func SHA256Bytes(value []byte) string {
-	sum := sha256.Sum256(value)
-	return hex.EncodeToString(sum[:])
-}
+func CanonicalJSON(value any) ([]byte, error) { return safe.CanonicalJSON(value) }
 
 func NewReportID(contentHash string) (string, error) {
 	if len(contentHash) < 12 {
 		return "", errors.New("content hash is too short")
 	}
+	// The ID exposes 12 digest hex characters for human correlation and adds a
+	// 32-bit random suffix so same-second reports for identical content differ.
 	random := make([]byte, 4)
 	if _, err := rand.Read(random); err != nil {
 		return "", err
@@ -101,13 +41,6 @@ func NewReportID(contentHash string) (string, error) {
 }
 
 func UTCNow() string { return time.Now().UTC().Format(time.RFC3339Nano) }
-
-func ValidatePackageBase(value string) error {
-	if !packageBaseRE.MatchString(value) {
-		return fmt.Errorf("invalid package base %q", value)
-	}
-	return nil
-}
 
 func EnsurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
@@ -131,6 +64,9 @@ func EnsurePrivateDir(path string) error {
 }
 
 func AtomicWrite(path string, data []byte, mode os.FileMode) error {
+	// Commit through a same-directory temporary inode, fsync file contents, then
+	// fsync the directory entry. Readers see either the old complete document or
+	// the new complete document, including across a crash.
 	if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
@@ -175,6 +111,8 @@ func AtomicWriteJSON(path string, value any) error {
 }
 
 func ReadJSONFile(path string, maxBytes int64, value any) error {
+	// Read an already-open no-follow inode and compare its metadata afterward.
+	// This centralizes the stable-read contract for user- and root-owned state.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
@@ -198,36 +136,16 @@ func ReadJSONFile(path string, maxBytes int64, value any) error {
 	if err := unix.Fstat(fd, &after); err != nil {
 		return err
 	}
-	if !sameStat(before, after) || int64(len(raw)) != after.Size {
+	if !safe.SameStat(before, after) || int64(len(raw)) != after.Size {
 		return fmt.Errorf("JSON file changed while reading: %s", path)
 	}
 	return DecodeStrict(raw, value)
 }
 
-func sameStat(a, b unix.Stat_t) bool {
-	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mtim == b.Mtim
-}
-
-func TerminalText(value any, limit int) string {
-	text := fmt.Sprint(value)
-	var result strings.Builder
-	count := 0
-	for _, r := range text {
-		if count >= limit {
-			result.WriteRune('…')
-			break
-		}
-		count++
-		if r == '\n' || r == '\t' {
-			result.WriteRune(r)
-		} else if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Cs) {
-			fmt.Fprintf(&result, "\\u%04x", r)
-		} else {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
-}
+// TerminalText delegates to the shared terminal-sanitisation implementation.
+// Keeping one implementation lets audit, egress, brief, and ui apply identical
+// escaping without violating package layering.
+func TerminalText(value any, limit int) string { return safe.Text(value, limit) }
 
 type ProcessIdentity struct {
 	PID       int    `json:"pid"`
@@ -261,10 +179,15 @@ func IdentityForPID(pid int) (ProcessIdentity, error) {
 	if !ok {
 		return ProcessIdentity{}, errors.New("cannot determine process owner")
 	}
+	// After removing pid/comm, field index 19 is proc(5)'s starttime (field 22).
+	// Pairing it with boot ID distinguishes PID reuse both within and across boots.
 	return ProcessIdentity{PID: pid, StartTime: fields[19], BootID: strings.TrimSpace(string(boot)), UID: stat.Uid}, nil
 }
 
 func TransactionIdentity() (ProcessIdentity, error) {
+	// Walk a bounded parent chain looking for yay so related hook/makepkg
+	// processes share one transaction identity. Fall back to the current process
+	// when invoked outside yay; 16 levels avoid an unbounded procfs walk.
 	pid := os.Getpid()
 	fallback := pid
 	for range 16 {
@@ -298,43 +221,31 @@ func IdentityIsLive(identity ProcessIdentity) bool {
 	return err == nil && current == identity
 }
 
-func HashFileNoFollow(path string) (string, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return "", err
+// truncate, truncateTail and valueOr are small local helpers. They are
+// duplicated in internal/brief rather than shared, because a package that
+// exists to hold three string helpers is worse than three string helpers.
+func truncate(value string, limit int) string {
+	if len(value) > limit {
+		return value[:limit]
 	}
-	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
-	var before, after unix.Stat_t
-	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFREG {
-		return "", fmt.Errorf("artifact is not a regular file: %s", path)
-	}
-	h := sha256.New()
-	written, err := io.Copy(h, file)
-	if err != nil {
-		return "", err
-	}
-	if err := unix.Fstat(fd, &after); err != nil {
-		return "", err
-	}
-	if !sameStat(before, after) || written != after.Size {
-		return "", fmt.Errorf("artifact changed while hashing: %s", path)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return value
 }
 
-func SortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
+func truncateTail(value string, limit int) string {
+	const marker = "[earlier output omitted]\n"
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
 	}
-	sort.Strings(keys)
-	return keys
+	if limit <= len(marker) {
+		return value[len(value)-limit:]
+	}
+	return marker + value[len(value)-(limit-len(marker)):]
 }
 
-func validUTF8OrReplacement(raw []byte) string {
-	if utf8.Valid(raw) {
-		return string(raw)
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
 	}
-	return strings.ToValidUTF8(string(raw), "�")
+	return value
 }

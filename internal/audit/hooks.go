@@ -14,8 +14,6 @@ import (
 const hookBegin = "-- BEGIN prolewatch"
 const hookEnd = "-- END prolewatch"
 const hookBlock = hookBegin + "\nrequire(\"prolewatch\")\n" + hookEnd + "\n"
-const legacyHookBegin = "-- BEGIN yay-ai-audit"
-const legacyHookEnd = "-- END yay-ai-audit"
 
 func YayConfigDir() string {
 	if root := os.Getenv("XDG_CONFIG_HOME"); root != "" {
@@ -26,14 +24,16 @@ func YayConfigDir() string {
 }
 
 func InstallHook() (string, string, error) {
+	// Manage one clearly delimited init.lua block while preserving all unrelated
+	// user configuration. Existing modified modules are backed up, never silently
+	// overwritten without a recoverable copy.
 	config := YayConfigDir()
 	if err := os.MkdirAll(config, 0o700); err != nil {
 		return "", "", err
 	}
 	initPath := filepath.Join(config, "init.lua")
 	modulePath := filepath.Join(config, "prolewatch.lua")
-	legacyModulePath := filepath.Join(config, "yay-ai-audit.lua")
-	for _, candidate := range []string{initPath, modulePath, legacyModulePath} {
+	for _, candidate := range []string{initPath, modulePath} {
 		if info, err := os.Lstat(candidate); err == nil && !info.Mode().IsRegular() {
 			return "", "", fmt.Errorf("refusing unsafe yay configuration entry: %s", candidate)
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -48,13 +48,7 @@ func InstallHook() (string, string, error) {
 	if err := validateManagedHook(text, hookBegin, hookEnd); err != nil {
 		return "", "", errors.New("existing init.lua contains malformed managed markers")
 	}
-	if err := validateManagedHook(text, legacyHookBegin, legacyHookEnd); err != nil {
-		return "", "", errors.New("existing init.lua contains malformed legacy managed markers")
-	}
 	updated := append([]byte(nil), existing...)
-	if strings.Contains(text, legacyHookBegin) {
-		updated = managedHookPattern(legacyHookBegin, legacyHookEnd).ReplaceAll(updated, nil)
-	}
 	if !strings.Contains(string(updated), hookBegin) {
 		separator := ""
 		if len(updated) > 0 && !bytes.HasSuffix(updated, []byte("\n")) {
@@ -77,17 +71,6 @@ func InstallHook() (string, string, error) {
 	if err := atomicUserWrite(modulePath, sourceRaw, 0o600); err != nil {
 		return "", "", err
 	}
-	if _, err := os.Lstat(legacyModulePath); err == nil {
-		legacyBackup := filepath.Join(config, "yay-ai-audit.lua.backup-"+timestamp)
-		if err := copyRegular(legacyModulePath, legacyBackup, 0o600); err != nil {
-			return "", "", err
-		}
-		if err := os.Remove(legacyModulePath); err != nil {
-			return "", "", err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", "", err
-	}
 	backup := ""
 	if !bytes.Equal(existing, updated) {
 		if len(existing) > 0 {
@@ -104,6 +87,8 @@ func InstallHook() (string, string, error) {
 }
 
 func validateManagedHook(text, begin, end string) error {
+	// Exactly one complete marker pair is manageable. Ambiguous/nested fragments
+	// are left untouched so an installer cannot delete unrelated Lua text.
 	begins, ends := strings.Count(text, begin), strings.Count(text, end)
 	if begins == 0 && ends == 0 {
 		return nil
@@ -119,6 +104,8 @@ func managedHookPattern(begin, end string) *regexp.Regexp {
 }
 
 func UninstallHook() error {
+	// Remove the module only when it still matches the packaged source. A user
+	// edit changes ownership of that content and is deliberately preserved.
 	config := YayConfigDir()
 	initPath := filepath.Join(config, "init.lua")
 	modulePath := filepath.Join(config, "prolewatch.lua")
@@ -154,6 +141,8 @@ func UninstallHook() error {
 }
 
 func atomicUserWrite(path string, data []byte, mode os.FileMode) error {
+	// Refuse a symlink at the final user-controlled path and replace via a
+	// same-directory rename so yay never observes a partially written hook.
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to replace symlink: %s", path)
 	}

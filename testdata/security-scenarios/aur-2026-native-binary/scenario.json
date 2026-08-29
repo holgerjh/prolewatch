@@ -4,7 +4,7 @@
   "title": "Native binary committed with package inputs",
   "incident": "July 2026 native ELF reports",
   "reference": "docs/aur-threat-model.md#what-has-happened",
-  "claim": "partially-mitigated",
+  "claim": "described",
   "phase": "pre",
   "expected": {
     "decision": "block",
@@ -12,10 +12,17 @@
     "coverage_complete": true,
     "exact_rule_ids": true,
     "required_findings": [
-      {"rule_id": "repository-native-binary", "severity": "high", "hard_block": false}
+      {
+        "rule_id": "repository-native-binary",
+        "severity": "high",
+        "hard_block": false
+      }
     ]
   },
   "generated_files": [
-    {"path": "payload", "kind": "minimal-elf"}
+    {
+      "path": "payload",
+      "kind": "minimal-elf"
+    }
   ]
 }

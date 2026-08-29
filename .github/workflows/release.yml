@@ -59,7 +59,7 @@ jobs:
         run: ./scripts/package-release.sh '${{ github.ref_name }}' '${{ matrix.arch }}' 'build/linux-${{ matrix.arch }}' dist
       - name: Verify release artifacts
         run: |
-          for name in prolewatch prolewatch-makepkg prolewatch-gpg provider-dispatch prolewatch-net prolewatch-build-dispatch; do
+          for name in prolewatch prolewatch-makepkg prolewatch-gpg prolewatch-net; do
             test -s "dist/${name}-linux-${{ matrix.arch }}"
             test -s "dist/${name}-linux-${{ matrix.arch }}.cdx.json"
           done
@@ -82,21 +82,11 @@ jobs:
         with:
           subject-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-gpg-linux-${{ matrix.arch }}.cdx.json
-      - name: Attest provider dispatcher SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
-        with:
-          subject-path: dist/provider-dispatch-linux-${{ matrix.arch }}
-          sbom-path: dist/provider-dispatch-linux-${{ matrix.arch }}.cdx.json
       - name: Attest network broker SBOM
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
         with:
           subject-path: dist/prolewatch-net-linux-${{ matrix.arch }}
           sbom-path: dist/prolewatch-net-linux-${{ matrix.arch }}.cdx.json
-      - name: Attest build dispatcher SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
-        with:
-          subject-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}
-          sbom-path: dist/prolewatch-build-dispatch-linux-${{ matrix.arch }}.cdx.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.arch }}
@@ -106,6 +96,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    environment: production-release
     permissions:
       contents: write
       id-token: write

@@ -1,23 +1,12 @@
 package audit
 
 import (
+	"github.com/holgerjh/prolewatch/internal/brief"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func validTestCleanRootManifest() *CleanRootManifest {
-	manifest := &CleanRootManifest{SchemaVersion: cleanRootManifestSchemaVersion, Generation: "1001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		BaseManifestHash: strings.Repeat("b", 64), PolicyFingerprint: strings.Repeat("c", 64),
-		StagingBackend: cleanRootStagingBackend, HookPolicy: cleanRootHookPolicy, ArtifactTrust: cleanRootArtifactTrust,
-		Packages: []string{"base-devel=1"}, ArtifactHashes: []string{}, PacmanConfigHash: strings.Repeat("d", 64),
-		PacmanVersion: "pacman test", MkarchrootVersion: "mkarchroot test"}
-	copy := *manifest
-	raw, _ := CanonicalJSON(copy)
-	manifest.ManifestSHA256 = SHA256Bytes(raw)
-	return manifest
-}
 
 func TestDecodeYayContextStrictAndBounded(t *testing.T) {
 	raw := `{"version":"1:2-3","last_modified":1700000000,"installed":true,"packages":[{"name":"demo","version":"1:2-3","local_version":"1:2-2","reason":"explicit","upgrade":true,"devel":false}],"depends":["glibc"],"makedepends":["go"],"checkdepends":[]}`
@@ -41,7 +30,7 @@ func TestDecodeYayContextStrictAndBounded(t *testing.T) {
 
 func TestCompareManifests(t *testing.T) {
 	record := func(name, hash string) map[string]any {
-		return FileRecord{Path: name, PathB64: pathB64(name), Kind: "file", SHA256: hash, Text: true, BinaryMetadata: map[string]any{}}.ManifestValue()
+		return brief.FileRecord{Path: name, PathB64: brief.PathB64(name), Kind: "file", SHA256: hash, Text: true, BinaryMetadata: map[string]any{}}.ManifestValue()
 	}
 	a := strings.Repeat("a", 64)
 	b := strings.Repeat("b", 64)
@@ -60,7 +49,7 @@ func TestCompareManifests(t *testing.T) {
 }
 
 func TestManifestHistoryCannotBypassCurrentScan(t *testing.T) {
-	scanner := NewScanner(DefaultConfig())
+	scanner := brief.NewScanner(BriefConfig(DefaultConfig()))
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "PKGBUILD"), []byte("pkgname=demo\npkgver=1\npkgrel=1\npackage() { sudo install payload \"$pkgdir/usr/bin/payload\"; }\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -72,7 +61,15 @@ func TestManifestHistoryCannotBypassCurrentScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !structuralBlock(inv) || findingByRule(inv.Findings, "shell-privilege-command") == nil {
-		t.Fatalf("current malicious content was not independently blocked: %#v", inv.Findings)
+	// The point of this test is that a clean manifest history cannot suppress
+	// what the current scan finds. Under the briefing model a recognised shell
+	// pattern is described rather than structurally blocked, so what must hold
+	// is that the finding is present and severe in the current inventory.
+	finding := findingByRule(inv.Findings, "shell-privilege-command")
+	if finding == nil || finding.Severity != "critical" {
+		t.Fatalf("manifest history suppressed the current scan: %#v", inv.Findings)
+	}
+	if AssessDeterministic(inv).Decision != "block" {
+		t.Fatalf("a critical finding did not require a decision: %#v", inv.Findings)
 	}
 }

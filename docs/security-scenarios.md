@@ -27,8 +27,8 @@ deterministic policy function used by production `deterministic-only` mode.
 - every variation of the technique will be detected;
 - an allowed package is safe;
 - the AI reviewer would return a particular verdict; or
-- the installed yay, sudoers, hook, clean-root, network, build, and artifact
-  pipeline was exercised.
+- the installed yay hook, containment, network broker, build, and
+  privileged-integration pipeline was exercised.
 
 AI is intentionally excluded because provider output, credentials, cost, and
 availability would make these acceptance results non-reproducible. The
@@ -36,17 +36,24 @@ deterministic scan tested here runs before AI in both review modes.
 
 ## Scenario map
 
+Each scenario declares a `claim` matching the threat model's vocabulary:
+`enforced` for a structural control that stops something without recognising
+anything about the content, `described` for a technique that is recognised and
+reported so the user can decide, and `control` for the baseline cases. There is
+deliberately no `mitigated` - that label attached the strongest claim to pattern
+matching, which is what this corpus exists to keep honest about.
+
 | Scenario | Technique | Historical or control mapping | Expected result | Claim boundary |
 |---|---|---|---|---|
 | `baseline-safe` | Control | Benign control package | Allow with no findings | Detects accidental overblocking in the corpus baseline; it is not a general safety proof. |
 | `network-warning` | Control | Deterministic-only warning policy | Allow with a visible `unexpected-network-client` warning | Shows that medium findings remain visible and are not silently promoted to malware claims. |
-| `aur-2018-remote-pipeline` | [`T01`](aur-threat-model.md#t01) | 2018 `curl \| bash` AUR modifications | Non-approval-eligible hard block | Covers the represented direct pipeline form, not arbitrary downloader obfuscation. |
-| `aur-2025-remote-source` | [`T01`](aur-threat-model.md#t01) | Representative remote second-stage delivery related to the 2025 RAT incident | Non-approval-eligible hard block | Uses a synthetic remote-source form; it is not a reconstruction of the recovered package. |
-| `aur-2026-install-ecosystem` | [`T02`](aur-threat-model.md#t02) | May 2026 `python-utils` install-script campaign | Non-approval-eligible `shell-ecosystem-install` block | Demonstrates behavioral coverage without treating every historical package name as permanent threat intelligence. |
-| `aur-2026-atomic-arch` | [`T02`](aur-threat-model.md#t02) | June 2026 npm and Bun Atomic Arch variants | Non-approval-eligible known-indicator and installer blocks | Covers the embedded names and represented installer forms; renamed or indirect dependencies remain outside this claim. |
-| `aur-2026-native-binary` | [`T04`](aur-threat-model.md#t04) | July 2026 reports of committed ELF payloads | Approval-eligible high-severity block | Format recognition cannot establish behavior, so this remains only partially mitigated. |
-| `aur-2026-native-sudo` | [`T04`](aur-threat-model.md#t04), [`T06`](aur-threat-model.md#t06) | Reported `openconnect-sso` native `validator` plus `sudo` execution | Non-approval-eligible privilege hard block, plus the binary finding | Covers the explicit native-file and privilege-command combination. |
-| `structural-escapes` | [`T07`](aur-threat-model.md#t07) | Archive and filesystem confinement | Non-approval-eligible hard blocks for an escaping symlink and tar member | Demonstrates the represented path escapes, not every parser or kernel vulnerability. |
+| `aur-2018-remote-pipeline` | [`T01`](aur-threat-model.md#t01) | 2018 `curl \| bash` AUR modifications | Approval-eligible critical finding; blocks pending your decision | Covers the represented direct pipeline form, not arbitrary downloader obfuscation. |
+| `aur-2025-remote-source` | [`T01`](aur-threat-model.md#t01) | Representative remote second-stage delivery related to the 2025 RAT incident | Approval-eligible critical finding; blocks pending your decision | Uses a synthetic remote-source form; it is not a reconstruction of the recovered package. |
+| `aur-2026-install-ecosystem` | [`T02`](aur-threat-model.md#t02) | May 2026 `python-utils` install-script campaign | Approval-eligible critical `shell-ecosystem-install` block | Demonstrates behavioral coverage without treating every historical package name as permanent threat intelligence. |
+| `aur-2026-atomic-arch` | [`T02`](aur-threat-model.md#t02) | June 2026 npm and Bun Atomic Arch variants | Approval-eligible critical known-indicator and installer blocks | Covers the embedded names and represented installer forms; renamed or indirect dependencies remain outside this claim. |
+| `aur-2026-native-binary` | [`T04`](aur-threat-model.md#t04) | July 2026 reports of committed ELF payloads | Approval-eligible high-severity finding; blocks pending your decision | Format recognition cannot establish behavior, so this remains only partially mitigated. |
+| `aur-2026-native-sudo` | [`T04`](aur-threat-model.md#t04), [`T06`](aur-threat-model.md#t06) | Reported `openconnect-sso` native `validator` plus `sudo` execution | Approval-eligible critical privilege finding, plus the binary finding | Covers the explicit native-file and privilege-command combination. |
+| `structural-escapes` | [`T07`](aur-threat-model.md#t07) | Archive and filesystem confinement | Structural hard blocks that **no approval can cross**, for an escaping symlink and tar member | Demonstrates the represented path escapes, not every parser or kernel vulnerability. |
 
 The incident sources and the broader status assessment are maintained in the
 [AUR threat model and incident map](aur-threat-model.md).
@@ -103,8 +110,9 @@ Run this command as the normal yay user, never as root. It first requires the
 installed `/usr/bin/prolewatch` version to match the checkout exactly, then
 runs `prolewatch doctor --no-probe`, and finally evaluates this complete corpus
 through the installed binary's `security-scenarios` command. The doctor check
-validates the installed files, permissions, yay hook, clean root, sandbox
-smoke test, and—when AI mode is configured—the existing provider attestation.
+validates the installed files, permissions, yay hook, the subordinate ID
+delegation, containment end to end, and—when AI mode is configured—the existing
+provider attestation.
 It does not make a live provider request.
 
 The installed scenario command uses the deterministic scanner and policy
@@ -131,8 +139,9 @@ A true system E2E suite would require a disposable Arch VM or similarly isolated
 host and would cover:
 
 ```text
-yay -> Lua hook -> pre/post scan -> makepkg wrapper -> clean-root sandbox
-    -> artifact inspection and sealing -> yay handoff
+yay -> Lua hook -> pre/post scan -> makepkg wrapper -> trusted-side acquisition
+    -> contained build -> artifact inspection -> privileged-integration gate
+    -> yay handoff
 ```
 
 That future suite should use a benign allow path and blocked fixtures whose

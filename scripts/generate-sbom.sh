@@ -9,7 +9,7 @@ output_dir=${3:?usage: generate-sbom.sh ARCH BUILD_DIR OUTPUT_DIR}
 mkdir -p -- "${output_dir}"
 
 cd -- "${project_dir}"
-for name in prolewatch prolewatch-makepkg prolewatch-gpg provider-dispatch prolewatch-net prolewatch-build-dispatch; do
+for name in prolewatch prolewatch-makepkg prolewatch-gpg prolewatch-net; do
   test -x "${build_dir}/${name}"
   GOOS=linux GOARCH="${target_arch}" CGO_ENABLED=0 GOFLAGS="${GOFLAGS:-} -buildvcs=false" \
     go tool github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod app \

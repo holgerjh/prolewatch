@@ -92,11 +92,8 @@ local function run_scan(phase, event)
   end
 end
 
-yay.opt.clean_menu = true
-yay.opt.diff_menu = true
-yay.opt.edit_menu = true
-yay.opt.pgp_fetch = true
-yay.opt.redownload = "yes"
+-- These are the only yay preferences enforcement changes: every makepkg and
+-- gpg invocation must reach the corresponding Prolewatch wrapper.
 yay.opt.makepkg_bin = "/usr/bin/prolewatch-makepkg"
 yay.opt.gpg_bin = "/usr/bin/prolewatch-gpg"
 

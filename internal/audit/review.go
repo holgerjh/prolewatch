@@ -3,7 +3,6 @@ package audit
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/holgerjh/prolewatch/internal/brief"
+	"github.com/holgerjh/prolewatch/internal/safe"
 )
 
 const DispatchProtocolVersion = 1
@@ -23,37 +25,54 @@ type SelectedFile struct {
 	Content    string `json:"content"`
 }
 
-type ReviewSnapshot struct {
-	SnapshotSchemaVersion int                `json:"snapshot_schema_version"`
-	PackageBase           string             `json:"package_base"`
-	Phase                 string             `json:"phase"`
-	ManifestHash          string             `json:"manifest_hash"`
-	ManifestViewHash      string             `json:"manifest_view_hash,omitempty"`
-	ManifestOmissions     []string           `json:"manifest_omissions,omitempty"`
-	Coverage              Coverage           `json:"coverage"`
-	DeterministicFindings []Finding          `json:"deterministic_findings"`
-	Manifest              []map[string]any   `json:"manifest"`
-	BatchIndex            int                `json:"batch_index"`
-	BatchCount            int                `json:"batch_count"`
-	Files                 []SelectedFile     `json:"files"`
-	YayContext            YayContext         `json:"yay_context"`
-	ManifestDiff          []ManifestChange   `json:"manifest_diff"`
-	Sources               []SourceProvenance `json:"sources"`
-	SourceVerification    SourceVerification `json:"source_verification"`
+type GuidanceContextLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
 }
 
-var manifestKeys = map[string]bool{
-	"path": true, "path_b64": true, "kind": true, "mode": true, "size": true,
-	"sha256": true, "executable": true, "text": true, "link_target": true,
-	"archive_entries": true, "archive_format": true, "extractable": true,
-	"selected_reason": true, "binary_metadata": true,
+type GuidanceTarget struct {
+	FindingID  string                `json:"finding_id"`
+	Finding    brief.Finding         `json:"finding"`
+	AnchorKind string                `json:"anchor_kind"`
+	AnchorText string                `json:"anchor_text"`
+	Context    []GuidanceContextLine `json:"context"`
+}
+
+type ReviewSnapshot struct {
+	// ManifestHash binds the complete scan. ManifestViewHash separately binds the
+	// possibly reduced provider view when post-phase vendor content is omitted by
+	// an explicit scan-depth-zero policy.
+	SnapshotSchemaVersion   int                      `json:"snapshot_schema_version"`
+	PackageBase             string                   `json:"package_base"`
+	Phase                   string                   `json:"phase"`
+	ManifestHash            string                   `json:"manifest_hash"`
+	ManifestViewHash        string                   `json:"manifest_view_hash,omitempty"`
+	ManifestOmissions       []string                 `json:"manifest_omissions,omitempty"`
+	Coverage                brief.Coverage           `json:"coverage"`
+	DeterministicFindings   []brief.Finding          `json:"deterministic_findings"`
+	GuidanceMinimumSeverity string                   `json:"guidance_minimum_severity"`
+	GuidanceTargets         []GuidanceTarget         `json:"guidance_targets"`
+	Manifest                []map[string]any         `json:"manifest"`
+	BatchIndex              int                      `json:"batch_index"`
+	BatchCount              int                      `json:"batch_count"`
+	Files                   []SelectedFile           `json:"files"`
+	YayContext              brief.YayContext         `json:"yay_context"`
+	ManifestDiff            []brief.ManifestChange   `json:"manifest_diff"`
+	Sources                 []brief.SourceProvenance `json:"sources"`
+	SourceVerification      brief.SourceVerification `json:"source_verification"`
+}
+
+// ReviewOptions changes advisory guidance selection without removing any
+// deterministic finding or selected source material from the provider view.
+type ReviewOptions struct {
+	SkipGuidanceFindingIDs map[string]bool
 }
 
 func validHexDigest(value string) bool {
 	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
 }
 
-func validateCoverage(coverage Coverage) error {
+func validateCoverage(coverage brief.Coverage) error {
 	values := []int64{
 		int64(coverage.FilesSeen), coverage.BytesSeen, int64(coverage.TextFiles), coverage.TextBytes,
 		int64(coverage.SelectedFiles), coverage.SelectedBytes, int64(coverage.ReviewEligibleFiles),
@@ -80,46 +99,12 @@ func validateCoverage(coverage Coverage) error {
 	return nil
 }
 
-func validateManifestRecord(record map[string]any) (FileRecord, error) {
-	if len(record) != len(manifestKeys) {
-		return FileRecord{}, errors.New("manifest record has missing or extra fields")
-	}
-	for key := range record {
-		if !manifestKeys[key] {
-			return FileRecord{}, fmt.Errorf("manifest record contains unknown field %q", key)
-		}
-	}
-	raw, err := CanonicalJSON(record)
-	if err != nil {
-		return FileRecord{}, err
-	}
-	var decoded FileRecord
-	if err := DecodeStrict(raw, &decoded); err != nil {
-		return FileRecord{}, fmt.Errorf("invalid manifest record: %w", err)
-	}
-	validKinds := map[string]bool{"file": true, "archive-member": true, "symlink": true, "fifo": true, "char-device": true, "block-device": true, "socket": true, "special": true}
-	validReasons := map[string]bool{"": true, "mandatory": true, "archive-member": true, "binary-metadata": true, "executable": true}
-	if decoded.Path == "" || len(decoded.Path) > 4096 || len(decoded.PathB64) > 8192 || !validKinds[decoded.Kind] || decoded.Mode > 0o7777 || decoded.Size < 0 || decoded.ArchiveEntries < 0 || len(decoded.LinkTarget) > 4096 || !validReasons[decoded.SelectedReason] || decoded.BinaryMetadata == nil {
-		return FileRecord{}, errors.New("manifest record violates value limits")
-	}
-	if _, err := base64.URLEncoding.DecodeString(decoded.PathB64); err != nil {
-		return FileRecord{}, errors.New("manifest path_b64 is invalid")
-	}
-	if decoded.Kind == "file" || decoded.Kind == "archive-member" {
-		if !validHexDigest(decoded.SHA256) {
-			return FileRecord{}, errors.New("manifest file digest is invalid")
-		}
-	} else if decoded.SHA256 != "" {
-		return FileRecord{}, errors.New("non-file manifest record has a digest")
-	}
-	return decoded, nil
-}
-
 func (s ReviewSnapshot) Validate() error {
+	// Keep the persisted/provider boundary strict even for locally assembled data.
 	if s.SnapshotSchemaVersion != ReviewSnapshotVersion {
 		return errors.New("unsupported review snapshot schema")
 	}
-	if err := ValidatePackageBase(s.PackageBase); err != nil {
+	if err := brief.ValidatePackageBase(s.PackageBase); err != nil {
 		return err
 	}
 	if s.Phase != "pre" && s.Phase != "post" && s.Phase != "artifact" {
@@ -131,10 +116,13 @@ func (s ReviewSnapshot) Validate() error {
 	if err := validateCoverage(s.Coverage); err != nil {
 		return err
 	}
+	if !brief.ValidSeverity(s.GuidanceMinimumSeverity) {
+		return errors.New("invalid guidance minimum severity")
+	}
 	if s.BatchCount < 1 || s.BatchIndex < 0 || s.BatchIndex >= s.BatchCount {
 		return errors.New("invalid batch numbering")
 	}
-	if len(s.Manifest) > 200000 || len(s.ManifestOmissions) > 1 || len(s.DeterministicFindings) > 100000 || len(s.Files) == 0 {
+	if len(s.Manifest) > 200000 || len(s.ManifestOmissions) > 1 || len(s.DeterministicFindings) > 100000 || len(s.GuidanceTargets) > findingGuidanceLimit || len(s.Files) == 0 {
 		return errors.New("review snapshot exceeds item limits")
 	}
 	omitsVendorTree := false
@@ -162,7 +150,7 @@ func (s ReviewSnapshot) Validate() error {
 	}
 	paths := map[string]bool{"<none>": true}
 	for _, record := range s.Manifest {
-		decoded, err := validateManifestRecord(record)
+		decoded, err := brief.ValidateManifestRecord(record)
 		if err != nil {
 			return err
 		}
@@ -175,7 +163,7 @@ func (s ReviewSnapshot) Validate() error {
 		paths[decoded.Path] = true
 	}
 	manifestRaw, err := CanonicalJSON(s.Manifest)
-	viewHash := SHA256Bytes(manifestRaw)
+	viewHash := safe.SHA256Bytes(manifestRaw)
 	if err != nil || (s.ManifestViewHash != "" && s.ManifestViewHash != viewHash) ||
 		(omitsVendorTree && (!validHexDigest(s.ManifestViewHash) || s.ManifestViewHash != viewHash)) ||
 		(!omitsVendorTree && viewHash != s.ManifestHash) {
@@ -185,6 +173,29 @@ func (s ReviewSnapshot) Validate() error {
 		if err := finding.Validate(); err != nil {
 			return err
 		}
+	}
+	findingIDs := map[string]bool{}
+	for _, finding := range s.DeterministicFindings {
+		findingIDs[findingGuidanceID(finding)] = true
+	}
+	seenTargets := map[string]bool{}
+	for _, target := range s.GuidanceTargets {
+		if !severityAtLeast(target.Finding.Severity, s.GuidanceMinimumSeverity) {
+			return errors.New("guidance target is below the configured decision threshold")
+		}
+		if err := target.Finding.Validate(); err != nil {
+			return err
+		}
+		if target.FindingID != findingGuidanceID(target.Finding) || !findingIDs[target.FindingID] {
+			return errors.New("guidance target is not bound to a deterministic finding")
+		}
+		if seenTargets[target.FindingID] {
+			return errors.New("duplicate guidance target")
+		}
+		if err := target.validateAnchor(); err != nil {
+			return err
+		}
+		seenTargets[target.FindingID] = true
 	}
 	for _, file := range s.Files {
 		if !paths[file.File] || file.ByteOffset < 0 {
@@ -197,7 +208,46 @@ func (s ReviewSnapshot) Validate() error {
 	return nil
 }
 
+func (target GuidanceTarget) validateAnchor() error {
+	if target.AnchorText == "" || len(target.AnchorText) > findingGuidanceTextLimit || terminalInline(target.AnchorText, 320) != target.AnchorText {
+		return errors.New("invalid guidance target anchor")
+	}
+	switch target.AnchorKind {
+	case "line":
+		if target.Finding.Line == nil || len(target.Context) == 0 || len(target.Context) > findingPreviewRadius*2+1 {
+			return errors.New("invalid line guidance target")
+		}
+		previous, anchorSeen := 0, false
+		for _, current := range target.Context {
+			if current.Line < 1 || (previous != 0 && current.Line != previous+1) ||
+				current.Line < *target.Finding.Line-findingPreviewRadius || current.Line > *target.Finding.Line+findingPreviewRadius ||
+				len(current.Text) > findingGuidanceTextLimit || terminalInline(current.Text, 320) != current.Text {
+				return errors.New("invalid guidance target context")
+			}
+			if current.Line == *target.Finding.Line {
+				if anchorSeen || current.Text != target.AnchorText {
+					return errors.New("guidance target context does not match its anchor")
+				}
+				anchorSeen = true
+			}
+			previous = current.Line
+		}
+		if !anchorSeen {
+			return errors.New("guidance target context omits its anchor")
+		}
+	case "evidence":
+		if len(target.Context) != 0 || target.AnchorText != terminalInline(target.Finding.Evidence, 320) {
+			return errors.New("guidance target evidence anchor mismatch")
+		}
+	default:
+		return errors.New("invalid guidance target anchor kind")
+	}
+	return nil
+}
+
 type DispatchRequest struct {
+	// probe returns fixed metadata, canary exercises provider isolation, and
+	// review is the only operation allowed to carry a snapshot or verdict.
 	ProtocolVersion int             `json:"protocol_version"`
 	Operation       string          `json:"operation"`
 	Snapshot        *ReviewSnapshot `json:"snapshot,omitempty"`
@@ -230,6 +280,11 @@ type ProviderMetadata struct {
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
 	AdapterPolicy  string `json:"adapter_policy"`
+	// CompatibilityWarning is set when the provider CLI is newer than the
+	// version this adapter was checked against. It is advisory: it is part of
+	// the attestation-bound metadata so the warning cannot be lost between the
+	// worker and the caller, and empty in the ordinary supported case.
+	CompatibilityWarning string `json:"compatibility_warning,omitempty"`
 }
 
 type DispatchResponse struct {
@@ -263,7 +318,7 @@ type Reviewer struct {
 }
 
 func NewReviewer(cfg Config) *Reviewer {
-	return &Reviewer{Config: cfg, Command: []string{"/usr/bin/sudo", "-n", "-u", "prolewatch", "/usr/libexec/prolewatch/provider-dispatch"}}
+	return &Reviewer{Config: cfg}
 }
 
 func (r *Reviewer) Probe(ctx context.Context) (ProviderMetadata, error) {
@@ -274,9 +329,10 @@ func (r *Reviewer) Probe(ctx context.Context) (ProviderMetadata, error) {
 	return response.Metadata, nil
 }
 
-// Canary asks the locked provider dispatcher to validate its real Bubblewrap
-// boundary. The calling yay user intentionally cannot traverse the provider's
-// private credential directory, so this check must execute as prolewatch.
+// Canary runs the provider's real Bubblewrap boundary check: a host sentinel
+// must be unreachable and the workspace must start empty. It executes inline as
+// the invoking user - there is no service account, and has not been one since
+// the single-administrator redesign.
 func (r *Reviewer) Canary(ctx context.Context) (ProviderMetadata, error) {
 	response, err := r.dispatch(ctx, DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "canary"})
 	if err != nil {
@@ -285,15 +341,23 @@ func (r *Reviewer) Canary(ctx context.Context) (ProviderMetadata, error) {
 	return response.Metadata, nil
 }
 
-func (r *Reviewer) Review(ctx context.Context, packageBase, phase string, inventory *Inventory) (ProviderMetadata, []Verdict, error) {
-	batches, err := r.batches(packageBase, phase, inventory)
+func (r *Reviewer) Review(ctx context.Context, packageBase, phase string, inventory *brief.Inventory, options ReviewOptions) (ProviderMetadata, []Verdict, error) {
+	// Require identical provider metadata across all batches and reject findings
+	// for paths absent from the full inventory. Batch boundaries cannot change
+	// which provider implementation or file namespace made the decision.
+	batches, err := r.batchesWithOptions(packageBase, phase, inventory, options)
 	if err != nil {
 		return ProviderMetadata{}, nil, err
 	}
 	var metadata ProviderMetadata
 	var verdicts []Verdict
+	expectedGuidance := map[string]string{}
+	for _, target := range batches[0].GuidanceTargets {
+		expectedGuidance[target.FindingID] = target.AnchorText
+	}
+	reviewTrigger := conditionalReviewTrigger(r.Config, phase, inventory.Findings)
 	for index, batch := range batches {
-		activityAI(ctx, index+1, len(batches), r.Config.Review.TimeoutSeconds)
+		progressAI(ctx, index+1, len(batches), r.Config.Review.TimeoutSeconds, reviewTrigger)
 		response, err := r.dispatch(ctx, DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "review", Snapshot: &batch})
 		if err != nil {
 			return ProviderMetadata{}, nil, err
@@ -312,6 +376,28 @@ func (r *Reviewer) Review(ctx context.Context, packageBase, phase string, invent
 				return ProviderMetadata{}, nil, fmt.Errorf("review verdict references unknown file %q", finding.File)
 			}
 		}
+		batchGuidance := map[string]bool{}
+		for _, guidance := range response.Verdict.Guidance {
+			if _, ok := expectedGuidance[guidance.FindingID]; !ok {
+				return ProviderMetadata{}, nil, errors.New("review guidance references an unknown deterministic finding")
+			}
+			batchGuidance[guidance.FindingID] = true
+		}
+		for findingID := range expectedGuidance {
+			if !batchGuidance[findingID] {
+				return ProviderMetadata{}, nil, errors.New("provider omitted guidance for a decision-requiring deterministic finding")
+			}
+		}
+		// IDs and completeness are checked first. A provider that commented on the
+		// wrong occurrence cannot attach that statement to the finding, but one bad
+		// quote must not erase independent AI findings or correctly bound guidance.
+		filtered := response.Verdict.Guidance[:0]
+		for _, guidance := range response.Verdict.Guidance {
+			if guidance.AnchorQuote == expectedGuidance[guidance.FindingID] {
+				filtered = append(filtered, guidance)
+			}
+		}
+		response.Verdict.Guidance = filtered
 		verdicts = append(verdicts, *response.Verdict)
 	}
 	return metadata, verdicts, nil
@@ -331,22 +417,39 @@ func (r *Reviewer) dispatch(parent context.Context, request DispatchRequest) (Di
 	timeout := time.Duration(r.Config.Review.TimeoutSeconds+r.Config.Review.KillGraceSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
-	command.Stdin = bytes.NewReader(raw)
-	stdout := newLimitedBuffer(r.Config.Limits.MaxDispatchBytes)
-	stderr := newLimitedBuffer(1024 * 1024)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	err = command.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		return DispatchResponse{}, ErrProviderTimeout
-	}
-	if err != nil {
-		return DispatchResponse{}, fmt.Errorf("provider dispatcher failed: %w: %s", err, truncateTail(stderr.String(), 8*1024))
-	}
 	var response DispatchResponse
-	if err := DecodeStrict(stdout.Bytes(), &response); err != nil {
-		return DispatchResponse{}, fmt.Errorf("provider dispatcher returned invalid JSON: %w", err)
+	if len(r.Command) != 0 {
+		command := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+		command.Stdin = bytes.NewReader(raw)
+		stdout := newLimitedBuffer(r.Config.Limits.MaxDispatchBytes)
+		stderr := newLimitedBuffer(1024 * 1024)
+		command.Stdout = stdout
+		command.Stderr = stderr
+		err = command.Run()
+		if ctx.Err() == context.DeadlineExceeded {
+			return DispatchResponse{}, ErrProviderTimeout
+		}
+		if err != nil {
+			return DispatchResponse{}, fmt.Errorf("provider worker failed: %w: %s", err, truncateTail(stderr.String(), 8*1024))
+		}
+		if err := DecodeStrict(stdout.Bytes(), &response); err != nil {
+			return DispatchResponse{}, fmt.Errorf("provider worker returned invalid JSON: %w", err)
+		}
+	} else {
+		// The provider worker runs in this process rather than behind a socket
+		// service because the invoking administrator also owns its credentials;
+		// a service account would not add a privilege boundary. The provider CLI
+		// keeps its own Bubblewrap isolation and dedicated credential directory.
+		var stdout, stderr bytes.Buffer
+		if code := runProviderWorker(ctx, bytes.NewReader(raw), &stdout, &stderr); code != 0 {
+			if ctx.Err() == context.DeadlineExceeded {
+				return DispatchResponse{}, ErrProviderTimeout
+			}
+			return DispatchResponse{}, fmt.Errorf("provider worker failed (%d): %s", code, truncateTail(stderr.String(), 8*1024))
+		}
+		if err := DecodeStrict(stdout.Bytes(), &response); err != nil {
+			return DispatchResponse{}, fmt.Errorf("provider worker returned invalid JSON: %w", err)
+		}
 	}
 	if err := response.Validate(request.Operation); err != nil {
 		return DispatchResponse{}, err
@@ -361,8 +464,12 @@ func (r *Reviewer) dispatch(parent context.Context, request DispatchRequest) (Di
 	return response, nil
 }
 
-func (r *Reviewer) batches(packageBase, phase string, inventory *Inventory) ([]ReviewSnapshot, error) {
-	if err := ValidatePackageBase(packageBase); err != nil {
+func (r *Reviewer) batches(packageBase, phase string, inventory *brief.Inventory) ([]ReviewSnapshot, error) {
+	return r.batchesWithOptions(packageBase, phase, inventory, ReviewOptions{})
+}
+
+func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brief.Inventory, options ReviewOptions) ([]ReviewSnapshot, error) {
+	if err := brief.ValidatePackageBase(packageBase); err != nil {
 		return nil, err
 	}
 	manifest := make([]map[string]any, 0, len(inventory.Files))
@@ -374,7 +481,7 @@ func (r *Reviewer) batches(packageBase, phase string, inventory *Inventory) ([]R
 			omittedVendorTree = true
 		}
 	}
-	manifestDiff := make([]ManifestChange, 0, len(inventory.ManifestDiff))
+	manifestDiff := make([]brief.ManifestChange, 0, len(inventory.ManifestDiff))
 	for _, change := range inventory.ManifestDiff {
 		if r.reviewSnapshotIncludesPath(phase, change.Path) {
 			manifestDiff = append(manifestDiff, change)
@@ -390,15 +497,23 @@ func (r *Reviewer) batches(packageBase, phase string, inventory *Inventory) ([]R
 	if omittedVendorTree {
 		omissions = append(omissions, "src/")
 	}
-	base := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: packageBase, Phase: phase, ManifestHash: inventory.ManifestHash, ManifestViewHash: SHA256Bytes(manifestRaw), ManifestOmissions: omissions, Coverage: inventory.Coverage, DeterministicFindings: inventory.Findings, Manifest: manifest, YayContext: inventory.YayContext, ManifestDiff: manifestDiff, Sources: inventory.Sources, SourceVerification: inventory.Verification}
+	guidanceTargets, err := reviewGuidanceTargets(inventory.Findings, inventory.Files, r.Config.Review.ManualReviewMinimumSeverity, options.SkipGuidanceFindingIDs)
+	if err != nil {
+		return nil, err
+	}
+	base := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: packageBase, Phase: phase, ManifestHash: inventory.ManifestHash, ManifestViewHash: safe.SHA256Bytes(manifestRaw), ManifestOmissions: omissions, Coverage: inventory.Coverage, DeterministicFindings: inventory.Findings, GuidanceMinimumSeverity: r.Config.Review.ManualReviewMinimumSeverity, GuidanceTargets: guidanceTargets, Manifest: manifest, YayContext: inventory.YayContext, ManifestDiff: manifestDiff, Sources: inventory.Sources, SourceVerification: inventory.Verification}
 	var pieces []SelectedFile
 	var total int64
+	// Cap each content piece at half a batch to leave deterministic room for JSON
+	// escaping and snapshot metadata; never use pieces smaller than 1 KiB.
 	chunkSize := max(1024, r.Config.Review.BatchBytes/2)
 	changed := map[string]bool{}
 	for _, item := range inventory.ManifestDiff {
 		changed[item.Path] = true
 	}
-	selected := append([]FileRecord(nil), inventory.Files...)
+	selected := append([]brief.FileRecord(nil), inventory.Files...)
+	// Changed files are reviewed first so a later provider/budget failure cannot
+	// leave the most decision-relevant delta until the final batch.
 	sort.SliceStable(selected, func(i, j int) bool {
 		if changed[selected[i].Path] != changed[selected[j].Path] {
 			return changed[selected[i].Path]
@@ -416,7 +531,7 @@ func (r *Reviewer) batches(packageBase, phase string, inventory *Inventory) ([]R
 		}
 		for offset := 0; offset < len(encoded); offset += chunkSize {
 			end := min(len(encoded), offset+chunkSize)
-			pieces = append(pieces, SelectedFile{File: record.Path, ByteOffset: offset, Content: validUTF8OrReplacement(encoded[offset:end])})
+			pieces = append(pieces, SelectedFile{File: record.Path, ByteOffset: offset, Content: safe.ValidUTF8OrReplacement(encoded[offset:end])})
 		}
 	}
 	if len(pieces) == 0 {
@@ -451,16 +566,53 @@ func (r *Reviewer) batches(packageBase, phase string, inventory *Inventory) ([]R
 	return batches, nil
 }
 
+func reviewGuidanceTargets(findings []brief.Finding, files []brief.FileRecord, minimumSeverity string, excluded map[string]bool) ([]GuidanceTarget, error) {
+	targets := make([]GuidanceTarget, 0, min(len(findings), findingGuidanceLimit))
+	selected := make(map[string]string, len(files))
+	for _, file := range files {
+		if file.SelectedText != "" {
+			selected[file.Path] = file.SelectedText
+		}
+	}
+	sorted := append([]brief.Finding(nil), findings...)
+	brief.SortFindings(sorted)
+	for _, finding := range sorted {
+		if !severityAtLeast(finding.Severity, minimumSeverity) || excluded[findingGuidanceID(finding)] {
+			continue
+		}
+		target := GuidanceTarget{FindingID: findingGuidanceID(finding), Finding: finding, Context: []GuidanceContextLine{}}
+		if finding.Line != nil {
+			if raw, ok := selected[finding.File]; ok {
+				context, contextErr := findingContextLines([]byte(raw), *finding.Line, findingPreviewRadius)
+				if contextErr == nil {
+					for _, current := range context {
+						if current.Line == *finding.Line && current.Text != "" {
+							target.AnchorKind, target.AnchorText, target.Context = "line", current.Text, context
+							break
+						}
+					}
+				}
+			}
+		}
+		if target.AnchorKind == "" {
+			target.AnchorKind = "evidence"
+			target.AnchorText = terminalInline(finding.Evidence, 320)
+		}
+		if err := target.validateAnchor(); err != nil {
+			return nil, fmt.Errorf("bind guidance target %s: %w", target.FindingID, err)
+		}
+		targets = append(targets, target)
+		if len(targets) == findingGuidanceLimit {
+			break
+		}
+	}
+	return targets, nil
+}
+
 func (r *Reviewer) reviewSnapshotIncludesPath(phase, file string) bool {
 	// The complete manifest hash still binds every vendor and Cargo-cache byte in
 	// the report. At depth zero the AI is intentionally not reviewing vendor
 	// content, so enumerating an arbitrarily large srcdir in every batch adds no
 	// evidence and can exceed the provider dispatch boundary.
 	return phase != "post" || r.Config.Vendor.ScanDepth > 0 || (file != "src" && !strings.HasPrefix(file, "src/"))
-}
-
-func StableMetadata(metadata []ProviderMetadata) []ProviderMetadata {
-	result := append([]ProviderMetadata(nil), metadata...)
-	sort.Slice(result, func(i, j int) bool { return result[i].Provider < result[j].Provider })
-	return result
 }

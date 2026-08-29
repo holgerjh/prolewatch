@@ -4,16 +4,24 @@
   "title": "Remote content piped to a shell",
   "incident": "2018 AUR curl-pipe-shell modifications",
   "reference": "docs/aur-threat-model.md#what-has-happened",
-  "claim": "mitigated",
+  "claim": "described",
   "phase": "pre",
   "expected": {
     "decision": "block",
-    "approval_eligible": false,
+    "approval_eligible": true,
     "coverage_complete": true,
     "exact_rule_ids": false,
     "required_findings": [
-      {"rule_id": "remote-pipe-shell", "severity": "critical", "hard_block": true},
-      {"rule_id": "shell-remote-pipeline", "severity": "critical", "hard_block": true}
+      {
+        "rule_id": "remote-pipe-shell",
+        "severity": "critical",
+        "hard_block": false
+      },
+      {
+        "rule_id": "shell-remote-pipeline",
+        "severity": "critical",
+        "hard_block": false
+      }
     ]
   },
   "generated_files": []

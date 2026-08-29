@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/holgerjh/prolewatch/internal/brief"
 	"io"
 	"io/fs"
 	"net/url"
@@ -20,6 +21,8 @@ import (
 const (
 	manifestName     = "scenario.json"
 	packageDirectory = "package"
+	// These are corpus-safety budgets, not scanner limits. Fixtures are inert
+	// documentation examples and should stay small enough for manual review.
 	maxManifestBytes = 64 * 1024
 	maxFixtureBytes  = 4 * 1024 * 1024
 	maxFixtureFiles  = 128
@@ -68,13 +71,15 @@ type Result struct {
 	Decision         string
 	ApprovalEligible bool
 	CoverageComplete bool
-	Findings         []audit.Finding
+	Findings         []brief.Finding
 	Problems         []string
 }
 
 func (r Result) Passed() bool { return len(r.Problems) == 0 }
 
 func Run(root, only string) ([]Result, error) {
+	// A corpus root is closed-world: every entry must be a scenario directory.
+	// Treating stray files as an error prevents CI from silently skipping them.
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("read scenario root: %w", err)
@@ -116,9 +121,11 @@ func Run(root, only string) ([]Result, error) {
 }
 
 func runOne(manifest Manifest, packageRoot string) (Result, error) {
+	// Scenarios exercise the deterministic production scanner only. Provider
+	// output is deliberately excluded because it is remote and non-reproducible.
 	cfg := audit.DefaultConfig()
 	cfg.Review.Mode = audit.ReviewModeDeterministicOnly
-	inventory, err := audit.NewScanner(cfg).ScanDirectory(packageRoot, manifest.Phase)
+	inventory, err := brief.NewScanner(audit.BriefConfig(cfg)).ScanDirectory(packageRoot, manifest.Phase)
 	if err != nil {
 		return Result{}, err
 	}
@@ -127,7 +134,7 @@ func runOne(manifest Manifest, packageRoot string) (Result, error) {
 		Manifest: manifest, Decision: assessment.Decision,
 		ApprovalEligible: assessment.ApprovalEligible,
 		CoverageComplete: inventory.Coverage.Complete,
-		Findings:         append([]audit.Finding(nil), inventory.Findings...),
+		Findings:         append([]brief.Finding(nil), inventory.Findings...),
 	}
 	if result.Decision != manifest.Expected.Decision {
 		result.Problems = append(result.Problems, fmt.Sprintf("decision=%s, want %s", result.Decision, manifest.Expected.Decision))
@@ -204,8 +211,13 @@ func (manifest Manifest) validate(directoryName string) error {
 	if !strings.HasPrefix(manifest.Reference, "docs/") || !strings.Contains(manifest.Reference, ".md#") || strings.Contains(manifest.Reference, "..") {
 		return errors.New("reference must be an anchored repository documentation path")
 	}
-	if manifest.Claim != "control" && manifest.Claim != "mitigated" && manifest.Claim != "partially-mitigated" {
-		return errors.New("claim must be control, mitigated, or partially-mitigated")
+	// The vocabulary matches docs/aur-threat-model.md: enforced means a
+	// structural control stops this without recognising anything about the
+	// content; described means the technique is recognised and reported, and
+	// the user decides. "Mitigated" is excluded because it would attach a
+	// structural claim to pattern matching.
+	if manifest.Claim != "control" && manifest.Claim != "enforced" && manifest.Claim != "described" {
+		return errors.New("claim must be control, enforced, or described")
 	}
 	if manifest.Phase != "pre" && manifest.Phase != "post" {
 		return errors.New("phase must be pre or post")
@@ -255,6 +267,8 @@ func (manifest Manifest) validate(directoryName string) error {
 }
 
 func materializePackage(scenarioRoot string, generated []GeneratedFile) (string, func(), error) {
+	// Work in a fresh temporary tree so generated symlinks and archive entries
+	// never need to be stored or followed in the source checkout.
 	source := filepath.Join(scenarioRoot, packageDirectory)
 	info, err := os.Lstat(source)
 	if err != nil || !info.IsDir() {
@@ -341,6 +355,9 @@ func generateFixture(root string, fixture GeneratedFile) error {
 	}
 	switch fixture.Kind {
 	case "minimal-elf":
+		// 0x7f + "ELF" is the ELF magic. The next bytes describe a synthetic
+		// 64-bit little-endian current-version header; the zero padding leaves it
+		// non-executable while still exercising binary-format recognition.
 		content := append([]byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0}, make([]byte, 24)...)
 		return os.WriteFile(target, content, 0o600)
 	case "traversal-tar":
@@ -365,6 +382,8 @@ func generateFixture(root string, fixture GeneratedFile) error {
 }
 
 func validateFixtureURLs(path string, content []byte) error {
+	// RFC 2606's .invalid namespace guarantees that copied scenario text cannot
+	// accidentally point the acceptance corpus at a real service.
 	for _, match := range webURLPattern.FindAllString(string(content), -1) {
 		parsed, err := url.Parse(strings.TrimRight(match, ").,;"))
 		if err != nil {
@@ -385,7 +404,7 @@ func validateRelativePath(value string) error {
 	return nil
 }
 
-func hasFinding(findings []audit.Finding, expected ExpectedFinding) bool {
+func hasFinding(findings []brief.Finding, expected ExpectedFinding) bool {
 	for _, finding := range findings {
 		if finding.RuleID == expected.RuleID && finding.Severity == expected.Severity && finding.HardBlock == expected.HardBlock {
 			return true

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/holgerjh/prolewatch/internal/brief"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,13 +22,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const auditUser = "prolewatch"
-
 var (
 	codexHostBinary        = "/usr/bin/codex"
 	claudeHostBinary       = "/usr/bin/claude"
 	providerSandboxBinary  = "/usr/bin/bwrap"
-	providerUserLookup     = user.Lookup
 	providerEffectiveUID   = os.Geteuid
 	providerConfigLoader   = func() (Config, error) { return LoadConfig("") }
 	providerAdapterFactory = activeAdapter
@@ -36,6 +33,8 @@ var (
 )
 
 type providerAdapter interface {
+	// Adapters own the exact supported CLI contract. Callers cannot select argv,
+	// environment, credential paths, tools, or endpoints through the protocol.
 	Metadata(context.Context) (ProviderMetadata, error)
 	Review(context.Context, ReviewSnapshot) (Verdict, error)
 	CredentialPath() string
@@ -55,9 +54,7 @@ func activeAdapter(cfg Config) providerAdapter {
 
 type codexAdapter struct{ adapterBase }
 
-func (a *codexAdapter) CredentialPath() string {
-	return "/var/lib/prolewatch/providers/codex/auth.json"
-}
+func (a *codexAdapter) CredentialPath() string { return providerCredentialPath("codex", "auth.json") }
 func (a *codexAdapter) Metadata(ctx context.Context) (ProviderMetadata, error) {
 	version, parsed, err := commandVersion(ctx, codexHostBinary, "--version")
 	if err != nil {
@@ -66,16 +63,23 @@ func (a *codexAdapter) Metadata(ctx context.Context) (ProviderMetadata, error) {
 	if compareVersions(parsed, mustVersion(MinCodexVersion)) < 0 {
 		return ProviderMetadata{}, fmt.Errorf("Codex %s or newer is required; found %s", MinCodexVersion, version)
 	}
+	// See MaxCodexVersion: the upper bound is a warning boundary, not a
+	// refusal. The feature enumeration below is the check that actually
+	// matters, and it fails closed on its own.
+	var warning string
 	if compareVersions(parsed, mustVersion(MaxCodexVersion)) >= 0 {
-		return ProviderMetadata{}, fmt.Errorf("Codex must be older than %s; found %s", MaxCodexVersion, version)
+		warning = fmt.Sprintf("%s is newer than the checked ceiling (< %s); the adapter's invocation flags have not been verified against it", version, MaxCodexVersion)
 	}
 	features, err := codexFeatures(ctx)
 	if err != nil {
 		return ProviderMetadata{}, err
 	}
-	return ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: canonicalRuntimeVersion("codex-cli", parsed), Model: a.provider.Model, Effort: a.provider.Effort, AdapterPolicy: fmt.Sprintf("codex-cli-v2:disable-current-%d", len(features))}, nil
+	return ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: canonicalRuntimeVersion("codex-cli", parsed), Model: a.provider.Model, Effort: a.provider.Effort, AdapterPolicy: fmt.Sprintf("codex-cli-v2:disable-current-%d", len(features)), CompatibilityWarning: warning}, nil
 }
 func (a *codexAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Verdict, error) {
+	// Codex runs ephemeral, read-only, without web search, user config, rules, or
+	// enabled feature surfaces. Only stdin and the fixed output schema cross the
+	// empty-workspace sandbox boundary.
 	metadata, err := a.Metadata(ctx)
 	if err != nil {
 		return Verdict{}, err
@@ -85,7 +89,11 @@ func (a *codexAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Ver
 	if err != nil {
 		return Verdict{}, err
 	}
-	args := providerBwrapBase("/var/lib/prolewatch/providers/codex", "/provider-home")
+	home, err := providerCredentialHome(a)
+	if err != nil {
+		return Verdict{}, err
+	}
+	args := providerBwrapBase(home, "/provider-home")
 	args = append(args, "--ro-bind", filepath.Join(providerShareRoot(), "verdict.schema.json"), "/schema.json", "--setenv", "HOME", "/provider-home", "--setenv", "CODEX_HOME", "/provider-home", "/usr/bin/codex", "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config", "--skip-git-repo-check", "--sandbox", "read-only", "--output-schema", "/schema.json", "--color", "never", "--model", a.provider.Model, "-c", fmt.Sprintf("model_reasoning_effort=%q", a.provider.Effort), "-c", "web_search=\"disabled\"")
 	for _, feature := range features {
 		args = append(args, "--disable", feature)
@@ -98,7 +106,7 @@ func (a *codexAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Ver
 	}
 	if schema, err := os.ReadFile(filepath.Join(providerShareRoot(), "verdict.schema.json")); err != nil {
 		return Verdict{}, err
-	} else if err := validateVerdictSchema(schema); err != nil {
+	} else if err := brief.ValidateVerdictSchema(schema); err != nil {
 		return Verdict{}, fmt.Errorf("invalid verdict schema: %w", err)
 	}
 	stdout, stderr, err := runProcessGroup(ctx, providerSandboxBinary, args, append(append(prompt, '\n'), snapshotRaw...), a.cfg)
@@ -115,7 +123,7 @@ func (a *codexAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Ver
 type claudeAdapter struct{ adapterBase }
 
 func (a *claudeAdapter) CredentialPath() string {
-	return "/var/lib/prolewatch/providers/anthropic/.credentials.json"
+	return providerCredentialPath("anthropic", ".credentials.json")
 }
 func (a *claudeAdapter) Metadata(ctx context.Context) (ProviderMetadata, error) {
 	version, parsed, err := commandVersion(ctx, claudeHostBinary, "--version")
@@ -131,6 +139,8 @@ func (a *claudeAdapter) Metadata(ctx context.Context) (ProviderMetadata, error) 
 	return ProviderMetadata{Provider: "anthropic", Transport: "cli", RuntimeVersion: canonicalRuntimeVersion("claude-code", parsed), Model: a.provider.Model, Effort: a.provider.Effort, AdapterPolicy: "claude-cli-v1:safe-no-tools"}, nil
 }
 func (a *claudeAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Verdict, error) {
+	// Claude's adapter disables tools, MCP, slash commands, history, sessions,
+	// and interactive permission fallback before accepting structured output.
 	if _, err := a.Metadata(ctx); err != nil {
 		return Verdict{}, err
 	}
@@ -138,10 +148,14 @@ func (a *claudeAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Ve
 	if err != nil {
 		return Verdict{}, err
 	}
-	if err := validateVerdictSchema(schema); err != nil {
+	if err := brief.ValidateVerdictSchema(schema); err != nil {
 		return Verdict{}, fmt.Errorf("invalid verdict schema: %w", err)
 	}
-	args := providerBwrapBase("/var/lib/prolewatch/providers/anthropic", "/provider-home")
+	home, err := providerCredentialHome(a)
+	if err != nil {
+		return Verdict{}, err
+	}
+	args := providerBwrapBase(home, "/provider-home")
 	args = append(args, "--ro-bind", filepath.Join(providerShareRoot(), "review-prompt.md"), "/prompt.md", "--setenv", "HOME", "/provider-home", "--setenv", "CLAUDE_CONFIG_DIR", "/provider-home", "--setenv", "CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1", "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1", "/usr/bin/claude", "-p", "--output-format", "json", "--json-schema", string(schema), "--safe-mode", "--setting-sources", "", "--strict-mcp-config", "--tools", "", "--disallowedTools", "mcp__*", "--disable-slash-commands", "--no-session-persistence", "--permission-mode", "dontAsk", "--model", a.provider.Model, "--effort", a.provider.Effort, "--system-prompt-file", "/prompt.md")
 	snapshotRaw, _ := CanonicalJSON(snapshot)
 	stdout, stderr, err := runProcessGroup(ctx, providerSandboxBinary, args, snapshotRaw, a.cfg)
@@ -171,16 +185,26 @@ func (a *claudeAdapter) Review(ctx context.Context, snapshot ReviewSnapshot) (Ve
 }
 
 func providerBwrapBase(hostHome, sandboxHome string) []string {
-	return []string{"--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind-try", "/etc/hosts", "/etc/hosts", "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf", "--ro-bind-try", "/etc/ssl", "/etc/ssl", "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", sandboxHome, "--bind", hostHome, sandboxHome, "--dir", "/workspace", "--chdir", "/workspace", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "LANG", "C.UTF-8"}
+	// The provider needs host networking for its configured remote API, but sees
+	// only immutable runtime files, minimal resolver/TLS files, its dedicated
+	// credential home, and a fresh empty workspace. --unshare-user is explicit:
+	// --unshare-all makes that namespace best-effort, while --disable-userns
+	// requires one that Bubblewrap definitely created before it can clamp nested
+	// namespaces.
+	return []string{"--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind-try", "/etc/hosts", "/etc/hosts", "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf", "--ro-bind-try", "/etc/ssl", "/etc/ssl", "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", sandboxHome, "--bind", hostHome, sandboxHome, "--dir", "/workspace", "--chdir", "/workspace", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "LANG", "C.UTF-8"}
 }
 
 var versionRE = regexp.MustCompile(`(?m)(\d+)\.(\d+)\.(\d+)`)
 
 func commandVersion(ctx context.Context, binary string, args ...string) (string, []int, error) {
+	// Metadata probes get a fixed 15-second ceiling independent of the longer AI
+	// review timeout; a hung --version must fail fast before consuming a worker.
 	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(probe, binary, args...)
 	command.Env = []string{"PATH=/usr/bin", "LANG=C.UTF-8"}
+	// Own process group so a hung provider CLI can be killed as a tree.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output := newLimitedBuffer(64 * 1024)
 	command.Stdout = output
 	command.Stderr = output
@@ -218,6 +242,9 @@ func atoi(value string) int { result, _ := strconv.Atoi(value); return result }
 var featureRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 func codexFeatures(ctx context.Context) ([]string, error) {
+	// Discover every non-removed feature and explicitly disable it. This makes a
+	// newly default-enabled CLI feature fail toward less capability rather than
+	// silently expanding the adapter surface.
 	home, err := os.MkdirTemp("", "prolewatch-codex-features-")
 	if err != nil {
 		return nil, err
@@ -227,6 +254,8 @@ func codexFeatures(ctx context.Context) ([]string, error) {
 	defer cancel()
 	command := exec.CommandContext(probe, codexHostBinary, "features", "list")
 	command.Env = []string{"PATH=/usr/bin", "HOME=" + home, "CODEX_HOME=" + home, "LANG=C.UTF-8"}
+	// Own process group so a hung provider CLI can be killed as a tree.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output := newLimitedBuffer(1024 * 1024)
 	command.Stdout = output
 	err = command.Run()
@@ -255,6 +284,8 @@ func codexFeatures(ctx context.Context) ([]string, error) {
 }
 
 func runProcessGroup(parent context.Context, binary string, args []string, input []byte, cfg Config) ([]byte, []byte, error) {
+	// Give the CLI a graceful TERM window, then kill the entire process group so
+	// helper descendants cannot survive cancellation or the review deadline.
 	command := exec.Command(binary, args...)
 	command.Stdin = bytes.NewReader(input)
 	stdout := newLimitedBuffer(cfg.Limits.MaxDispatchBytes)
@@ -293,7 +324,40 @@ func runProcessGroup(parent context.Context, binary string, args []string, input
 	}
 }
 
+// providerCredentialPath locates the AI provider credential under the invoking
+// user's own state directory.
+//
+// The invoking user is the administrator and owns the provider process, so a
+// separate service-account path would not create a privilege boundary. File
+// ownership and mode checks below protect the credential that the provider CLI
+// uses.
+func providerCredentialPath(provider, file string) string {
+	return filepath.Join(StateRoot(), "providers", provider, file)
+}
+
+// providerCredentialHome is the single derivation of the host directory bound
+// into the provider sandbox, and it is deliberately the parent of the path the
+// worker validates.
+//
+// Deriving it a second time is how the credential ends up checked at one path
+// and mounted from another: the check passes, the provider sees an empty or
+// absent home, and the failure reads like a provider outage rather than a
+// misconfiguration here. EnsurePrivateDir also holds the directory itself to the
+// same ownership and mode rule the credential file is held to.
+//
+// The bind is read-write because both supported CLIs refresh their own OAuth
+// token in place; nothing else of the user's is in this directory.
+func providerCredentialHome(adapter providerAdapter) (string, error) {
+	home := filepath.Dir(adapter.CredentialPath())
+	if err := EnsurePrivateDir(home); err != nil {
+		return "", fmt.Errorf("provider credential home %s is unusable: %w", home, err)
+	}
+	return home, nil
+}
+
 func validateCredential(path string, uid uint32) error {
+	// Credentials must be regular, owned by the invoking user, and inaccessible
+	// to group and other. O_NOFOLLOW rejects path substitution.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("dedicated provider credential is missing: %w", err)
@@ -304,77 +368,71 @@ func validateCredential(path string, uid uint32) error {
 		return err
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uid || st.Mode&0o077 != 0 {
-		return errors.New("dedicated provider credential has unsafe ownership or permissions")
+		return fmt.Errorf("provider credential %s must be a regular file owned by uid %d with no group or other access", path, uid)
 	}
 	return nil
 }
 
-func RunProviderDispatcher(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) int {
-	account, err := providerUserLookup(auditUser)
-	if err != nil {
-		fmt.Fprintln(stderr, "prolewatch user does not exist")
-		return 22
-	}
-	uid64, _ := strconv.ParseUint(account.Uid, 10, 32)
-	if providerEffectiveUID() != int(uid64) {
-		fmt.Fprintln(stderr, "provider-dispatch must run as prolewatch")
-		return 22
-	}
+func runProviderWorker(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) int {
+	// The worker accepts only the three typed DispatchRequest operations and
+	// derives provider/model/credentials from installed configuration. It runs
+	// as the invoking user and validates that user's credential ownership.
+	uid64 := uint64(providerEffectiveUID())
 	cfg, err := providerConfigLoader()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 20
+		return ExitInvalidInvocation
 	}
 	if cfg.Review.Mode != ReviewModeAI {
-		fmt.Fprintln(stderr, "provider-dispatch is disabled by review.mode")
-		return 22
+		fmt.Fprintln(stderr, "provider worker is disabled by review.mode")
+		return ExitReviewUnavailable
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, cfg.Limits.MaxDispatchBytes+1))
 	if err != nil || int64(len(raw)) > cfg.Limits.MaxDispatchBytes {
-		fmt.Fprintln(stderr, "dispatcher input limit exceeded")
-		return 22
+		fmt.Fprintln(stderr, "provider worker input limit exceeded")
+		return ExitReviewUnavailable
 	}
 	var request DispatchRequest
 	if err := DecodeStrict(raw, &request); err != nil {
-		fmt.Fprintln(stderr, "dispatcher input is invalid:", err)
-		return 22
+		fmt.Fprintln(stderr, "provider worker input is invalid:", err)
+		return ExitReviewUnavailable
 	}
 	if err := request.Validate(); err != nil {
-		fmt.Fprintln(stderr, "dispatcher request is invalid:", err)
-		return 22
+		fmt.Fprintln(stderr, "provider worker request is invalid:", err)
+		return ExitReviewUnavailable
 	}
 	adapter := providerAdapterFactory(cfg)
 	if err := validateCredential(adapter.CredentialPath(), uint32(uid64)); err != nil {
 		fmt.Fprintln(stderr, err)
-		return 22
+		return ExitReviewUnavailable
 	}
 	metadata, err := adapter.Metadata(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 22
+		return ExitReviewUnavailable
 	}
 	response := DispatchResponse{ProtocolVersion: DispatchProtocolVersion, Metadata: metadata}
 	if request.Operation == "canary" {
 		if err := providerOuterSandboxCanary(ctx, cfg); err != nil {
 			fmt.Fprintln(stderr, err)
-			return 22
+			return ExitReviewUnavailable
 		}
 	}
 	if request.Operation == "review" {
 		verdict, err := adapter.Review(ctx, *request.Snapshot)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return 22
+			return ExitReviewUnavailable
 		}
 		response.Verdict = &verdict
 	}
 	encoded, err := CanonicalJSON(response)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 22
+		return ExitReviewUnavailable
 	}
 	_, _ = stdout.Write(append(encoded, '\n'))
-	return 0
+	return ExitOK
 }
 
 func init() { signal.Ignore(syscall.SIGPIPE) }

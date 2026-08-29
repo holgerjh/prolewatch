@@ -9,10 +9,11 @@
     "summary",
     "prompt_injection_detected",
     "findings",
+    "guidance",
     "coverage_notes"
   ],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 3 },
     "verdict": { "type": "string", "enum": ["allow", "block"] },
     "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
     "summary": { "type": "string" },
@@ -40,6 +41,21 @@
           "line": { "type": ["integer", "null"], "minimum": 1 },
           "evidence": { "type": "string" },
           "rationale": { "type": "string" }
+        }
+      }
+    },
+    "guidance": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "assessment", "comment", "anchor_quote"],
+        "properties": {
+          "finding_id": { "type": "string" },
+          "assessment": { "type": "string", "enum": ["likely-benign", "unclear", "concerning"] },
+          "comment": { "type": "string" },
+          "anchor_quote": { "type": "string", "minLength": 1, "maxLength": 2048 }
         }
       }
     },

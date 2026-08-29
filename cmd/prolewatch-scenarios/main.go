@@ -52,6 +52,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runInstalled(root, only string, stdout, stderr io.Writer) int {
+	// Installed acceptance must use the same unprivileged identity as yay. It
+	// first proves source/installation version agreement and a healthy boundary,
+	// then delegates the inert corpus to the installed scanner.
 	if effectiveUID() == 0 {
 		fmt.Fprintln(stderr, "installed scenario suite: run as the normal yay user, not root")
 		return 1
@@ -92,6 +95,8 @@ func runInstalled(root, only string, stdout, stderr io.Writer) int {
 }
 
 func checkInstalledBinary(path string) error {
+	// Do not execute a checkout-controlled or replaceable binary as the trusted
+	// installed implementation under test.
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)

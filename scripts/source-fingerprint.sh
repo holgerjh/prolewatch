@@ -5,7 +5,7 @@ export LC_ALL=C
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 
 {
-  for file in go.mod go.sum; do
+  for file in Makefile go.mod go.sum; do
     digest=$(sha256sum -- "${project_dir}/${file}")
     printf '%s\0%s\n' "${file}" "${digest%% *}"
   done
@@ -13,5 +13,6 @@ project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
     relative=${path#"${project_dir}/"}
     digest=$(sha256sum -- "${path}")
     printf '%s\0%s\n' "${relative}" "${digest%% *}"
-  done < <(find "${project_dir}/cmd" "${project_dir}/internal" -type f ! -name '*_test.go' -print0 | sort -z)
+  done < <(find "${project_dir}/cmd" "${project_dir}/internal" "${project_dir}/packaging" "${project_dir}/share" "${project_dir}/scripts" \
+	-type f ! -name '*_test.go' -print0 | sort -z)
 } | sha256sum | awk '{print $1}'

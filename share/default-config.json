@@ -11,11 +11,14 @@
     }
   },
   "review": {
-    "mode": "ai",
+    "mode": "deterministic-only",
     "minimum_confidence": "high",
+    "manual_review_minimum_severity": "high",
     "timeout_seconds": 180,
     "kill_grace_seconds": 5,
-    "batch_bytes": 768000
+    "batch_bytes": 768000,
+    "include_recipe_phase": false,
+    "guide_decision_findings": true
   },
   "limits": {
     "max_dispatch_bytes": 20971520,
@@ -39,27 +42,22 @@
     "workspace_bytes": 17179869184,
     "workspace_files": 500000,
     "output_bytes": 33554432,
-    "disk_reserve_bytes": 2147483648,
-    "clean_root_prepare_timeout_seconds": 900,
-    "clean_root_bytes": 34359738368,
-    "clean_root_cache_bytes": 17179869184,
-    "clean_root_max_prepared": 2
+    "disk_reserve_bytes": 2147483648
   },
   "network": {
-    "auto_enable_known_tools": true,
+    "mode": "prompt",
+    "prompt_timeout_seconds": 300,
+    "grant_scope": "transaction",
+    "max_destinations": 8,
+    "max_requests": 100000,
     "max_connections": 32,
     "connect_timeout_seconds": 15,
     "idle_timeout_seconds": 60,
-    "max_transfer_bytes": 8589934592
-  },
-  "sandbox": {
-    "read_only_paths": []
+    "max_transfer_bytes": 8589934592,
+    "disk_reserve_bytes": 2147483648
   },
   "vendor": {
     "scan_depth": 0
-  },
-  "overrides": {
-    "allow_unsafe": false
   },
   "terminal": {
     "style": "brand"
