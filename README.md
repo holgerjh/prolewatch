@@ -38,6 +38,35 @@ service account, `sudoers` entry, or setuid binary.
 > confidence thresholds, and evaluation coverage are still evolving. Start on
 > an isolated Arch Linux system before relying on it.
 
+## See it in action
+
+### Contained yay walkthrough
+
+Prolewatch reviews the recipe, pauses before network contact, and keeps source
+acquisition and `makepkg` inside the contained transaction. It ends where its
+job ends: at `pacman` asking for your password, because the install itself stays
+yours.
+
+<p align="center">
+  <a href="docs/images/prolewatch-basic.gif"><img src="docs/images/prolewatch-basic.gif" alt="Animated terminal demo of Prolewatch reviewing catclock-git, prompting before network access, and running makepkg in containment." width="1105"></a>
+</p>
+
+<p align="center"><em>Basic guarded transaction · <a href="docs/demos/prolewatch-basic.cast">sanitized asciicast source</a></em></p>
+
+### Detection, inspection, and AI guidance
+
+AI review is optional and off by default; this is what it adds when you turn it
+on. The `moon-buggy` recipe contains several `eval` statements. Prolewatch
+detects them without a provider, requires a decision, opens the verified
+read-only inspection, and places bounded AI guidance beside each exact finding —
+which can raise a question, but never clears the deterministic finding.
+
+<p align="center">
+  <a href="docs/images/prolewatch-ai-guidance.gif"><img src="docs/images/prolewatch-ai-guidance.gif" alt="Animated terminal demo of Prolewatch detecting eval statements in moon-buggy, opening read-only finding inspection, and showing contextual AI guidance." width="1105"></a>
+</p>
+
+<p align="center"><em>Detection and contextual guidance · <a href="docs/demos/prolewatch-ai-guidance.cast">sanitized asciicast source</a></em></p>
+
 ## What Prolewatch offers
 
 | Control | What it does |
@@ -589,34 +618,6 @@ that fails, times out, or is not installed leaves a deterministic briefing and
 an install that proceeds on deterministic grounds alone. The quality of a model
 you select is therefore a question of how much extra context you get, never of
 what the tool will let past.
-
-### See it in action
-
-#### Contained yay walkthrough
-
-Prolewatch reviews the recipe, pauses before network contact, and keeps source
-acquisition and `makepkg` inside the contained transaction. It ends where its
-job ends: at `pacman` asking for your password, because the install itself stays
-yours.
-
-<p align="center">
-  <a href="docs/images/prolewatch-basic.gif"><img src="docs/images/prolewatch-basic.gif" alt="Animated terminal demo of Prolewatch reviewing catclock-git, prompting before network access, and running makepkg in containment." width="1105"></a>
-</p>
-
-<p align="center"><em>Basic guarded transaction · <a href="docs/demos/prolewatch-basic.cast">sanitized asciicast source</a></em></p>
-
-#### Detection, inspection, and AI guidance
-
-The `moon-buggy` recipe contains several `eval` statements. Prolewatch detects
-them, requires a decision, opens the verified read-only inspection, and places
-bounded AI guidance beside each exact finding without clearing the deterministic
-result.
-
-<p align="center">
-  <a href="docs/images/prolewatch-ai-guidance.gif"><img src="docs/images/prolewatch-ai-guidance.gif" alt="Animated terminal demo of Prolewatch detecting eval statements in moon-buggy, opening read-only finding inspection, and showing contextual AI guidance." width="1105"></a>
-</p>
-
-<p align="center"><em>Detection and contextual guidance · <a href="docs/demos/prolewatch-ai-guidance.cast">sanitized asciicast source</a></em></p>
 
 ## How this was built
 
