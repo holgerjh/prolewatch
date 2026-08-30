@@ -47,7 +47,7 @@ make release-check
 `go mod verify`, `govulncheck`, race-enabled tests, `go vet`, `bash -n` over the
 shell scripts, an import-direction layering check, the privileged-asset
 invariant (release invariant 1: no daemon, socket, service account, `sudoers`
-entry, or setuid binary ships), the nine deterministic security scenarios, a 72%
+entry, or setuid binary ships), the ten deterministic security scenarios, a 72%
 coverage floor across every internal package, a deterministic rebuild compared
 against a source fingerprint, and SBOM generation.
 

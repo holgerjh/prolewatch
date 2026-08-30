@@ -25,9 +25,9 @@ built artifact to `pacman`. It says nothing about the source it was built from.
 So for this release the trust decision is the one the user makes about the
 checkout: review the source, or confine it to a disposable Arch system. There
 is no cryptographic step that can substitute for that, and this document will
-not pretend otherwise. `LocalFileSigLevel = Required TrustedOnly` and the
-installed-file allow-list check what was built; they cannot check what it was
-built from.
+not pretend otherwise. The signature check against the development key home and
+the installed-file allow-list check what was built; they cannot check what it
+was built from.
 
 ### The signed path exists but is deliberately unpublished
 

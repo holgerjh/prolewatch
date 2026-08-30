@@ -76,8 +76,7 @@ would run, and lets you keep everything or strip what you did not ask for.
 AI review is optional and off by default. This is what it adds when you turn it
 on. The `moon-buggy` recipe contains several `eval` statements. Prolewatch finds
 them without any provider, requires a decision, opens the verified read-only
-inspection, and puts bounded AI guidance beside each exact finding. Guidance can
-raise a question. It never clears a deterministic finding.
+inspection, and puts bounded AI guidance beside each exact finding.
 
 <p align="center">
   <a href="docs/images/prolewatch-ai-guidance.gif"><img src="docs/images/prolewatch-ai-guidance.gif" alt="Animated terminal demo of Prolewatch detecting eval statements in moon-buggy, opening read-only finding inspection, and showing contextual AI guidance." width="1105"></a>
@@ -103,6 +102,12 @@ build's scope.
 That is why containment comes first: it does not have to recognise malicious
 code to limit what the build can reach.
 
+A dedicated build account gets you part of this, and it is the honest thing to
+measure against. But its home persists between builds, so package code can
+settle in and wait for the next one, its network and resources stay
+unrestricted, and your whole AUR workflow has to move into that account with the
+built package coming back out. `yay` stays where it is here.
+
 ### 2. Sources arrive before the package can speak
 
 Prolewatch evaluates the `PKGBUILD` inside containment, freezes the source set
@@ -112,7 +117,8 @@ closed.
 
 The build has no direct egress. When a phase does reach for the network, the
 first public HTTP(S) destination stops the build and asks you, in your terminal,
-separated from package output. A later phase gets a fresh broker and asks again.
+separated from package output. A grant is bound to that transaction and that
+destination; a later phase gets a fresh broker and asks again.
 Cargo and Go detection adds context to that question and never grants access on
 its own.
 
@@ -126,6 +132,19 @@ files, content-binding failures.
 Vendor content is not scanned semantically by default (`vendor.scan_depth: 0`).
 Depth `1` scans direct vendor content, depth `2` opens one nested archive, and so
 on. The checkout and the final artifact are always scanned.
+
+Every gate prints a report id, and a gate that stops you offers `[i]` for the
+findings above your decision threshold and `[a]` for all of them. To read a
+report that did not stop you, or to read one again afterwards:
+
+```bash
+prolewatch inspect --latest
+prolewatch inspect <report id>
+```
+
+That reopens the findings with their source context and any AI guidance, without
+approving anything or contacting a provider. `prolewatch report <report id>`
+prints the report itself.
 
 ### 4. Optional AI guidance
 
@@ -170,50 +189,6 @@ terminal, so an unattended install stops there.
 
 Containment limits what the build could reach. The gate shows what the finished
 package intends to run as root, which no build sandbox can do for you.
-
-### What the outcomes mean
-
-| Outcome | Meaning |
-| --- | --- |
-| `NO BLOCKING FINDINGS` | No finding needs a decision. |
-| `NO NEW DECISION NEEDED` | The report contains a severe deterministic finding you already approved at the recipe gate; its full file-manifest entry is unchanged in this live transaction, and no new evidence needs an answer. |
-| `NEEDS YOUR DECISION` | A severe finding requires review and may be approved. |
-| `STRUCTURAL FAILURE - NOT APPROVABLE` | A structural failure stopped the transaction. No approval can cross it. |
-| `APPROVED BY YOU` | You approved this exact snapshot once. |
-
-A build that never reaches a verdict is labelled separately, because a broken
-recipe and a hostile package are not the same event and should not look alike:
-
-| Outcome | Meaning |
-| --- | --- |
-| `BUILD FAILED` | The contained build exited non-zero. Usually a defect in the recipe or its upstream, though Prolewatch can only tell you the contained command failed, not that it was the package's own build that failed. |
-| `BUILD STOPPED` | Prolewatch's resource envelope ended the build: runtime timeout, output ceiling (`build.output_bytes`), workspace ceiling (`build.workspace_bytes`), a kill, or cancellation. Containment worked as configured. Raise the matching `build.*` limit if the package legitimately needs more. |
-| `SANDBOX ERROR` | Containment could not be established. This one is about Prolewatch or the host, not the package. |
-
-When a build fails, contained `makepkg` output is replayed in the order
-Prolewatch observed it, so the failure reads in the order it happened instead of
-with every error hoisted above its cause. Successful phases print each stream
-separately.
-
-Approvals are one-time and bound to the exact content and policy shown. Network
-grants are bound to the transaction and the displayed destination. There is no
-global override and no setting that turns enforcement off; configurations
-carrying the retired `overrides.allow_unsafe` key are rejected. Neither review
-mode judges a package safe.
-
-### Why not just run `yay` as a separate user
-
-A dedicated build account is the usual answer, and a real improvement: package
-code no longer runs with your SSH keys, GnuPG directory and browser profiles in
-reach. It is the honest baseline, so here is what a build still gets once it is
-on the other side of it.
-
-| | `yay` as a separate user | Prolewatch |
-| --- | --- | --- |
-| **Home the build writes to** | The account's own home, persistent between builds, somewhere package code can settle in and wait for the next one | A temporary home discarded with the build, with no host identity files mounted |
-| **Network while package code runs** | Unrestricted | Declared sources fetched on the trusted side before the package's shell runs; a later connection pauses the build for a decision |
-| **Resources** | Unrestricted | Memory, CPU, task, runtime, file-size, and whole-process-tree limits |
-| **What it costs you** | Your AUR workflow moves into that account, and the built package has to come back out | `yay` stays where it is |
 
 ## Installation
 
@@ -412,7 +387,9 @@ is available when only the lower-level hook step is wanted.
 ### If Prolewatch stops a package you want
 
 Most stops have a way through that keeps containment on. Reach for the narrowest
-one that fits.
+one that fits. There is no global override and no setting that turns enforcement
+off; configurations carrying the retired `overrides.allow_unsafe` key are
+rejected.
 
 | What you saw | Way through | Build stays contained |
 | --- | --- | --- |
@@ -479,7 +456,7 @@ frontier models (Fable 5, Opus 5 and gpt-5.6-sol) were used adversarially repeat
 against the codebase and
 the threat model, and their findings substantially drove what the design is now.
 Every commit passes a release gate: race-enabled tests, `govulncheck`, an
-import-direction layering check, a privileged-asset invariant, nine deterministic
+import-direction layering check, a privileged-asset invariant, ten deterministic
 security scenarios, and a coverage floor. The isolation claims are measured on a
 real kernel by the probes in `scripts/probes/`.
 

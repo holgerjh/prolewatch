@@ -185,7 +185,8 @@ policy fingerprint, so an approval cannot cross between policies. The threshold
 also drives inspection: at the default, `[i] Inspect HIGH/CRITICAL findings`
 shows only decision-requiring items, with SHA-256-bound source context where a
 local text line is available. Set it to `medium` and the action becomes
-`Inspect MEDIUM+ findings`.
+`Inspect MEDIUM+ findings`. `[a] Inspect all N findings` sits beside it and
+ignores the threshold.
 
 The inspector names the exact local file and line for deeper manual reading, and
 deliberately does not launch an editor: external editor plugins, modelines, and

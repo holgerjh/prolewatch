@@ -80,13 +80,12 @@ fingerprint="$(gpg --homedir "$dev_key_dir" --with-colons --list-secret-keys \
 printf '%s\n' "$fingerprint" > "$dev_key_dir/fingerprint"
 gpg --homedir "$dev_key_dir" --armor --export "$fingerprint" \
   > "$dev_key_dir/public-key.asc"
-sudo pacman-key --add "$dev_key_dir/public-key.asc"
-sudo pacman-key --lsign-key "$fingerprint"
 ```
 
-The verifier also requires `LocalFileSigLevel = Required TrustedOnly` (which
-`PROLEWATCH_SET_PACMAN_SIGLEVEL=1 make dev-install` will set, with a backup) in
-`/etc/pacman.conf`. These steps match the installation instructions in the
+Nothing here touches the system pacman keyring or `/etc/pacman.conf`.
+`verify-arch-package` checks the detached signature against this key home
+directly, so it does not depend on pacman's `LocalFileSigLevel`. These steps
+match the installation instructions in the
 [README](README.md#installation), and `make dev-install` runs all of them,
 reusing an existing signing key — which is what makes it usable on a disposable
 test system you reset often. Build and install subsequent
@@ -95,7 +94,7 @@ development revisions with:
 ```bash
 make arch-package
 make verify-arch-package PACKAGE=/absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
-sudo pacman -U -- /absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
+sudo pacman --gpgdir "$dev_key_dir" -U -- /absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
 prolewatch setup
 make installed-scenarios
 ```
@@ -196,11 +195,12 @@ prolewatch setup
 make acceptance-probes
 ```
 
-`make dev-install` will stop if `LocalFileSigLevel` does not require trusted
-signatures. Add `PROLEWATCH_SET_PACMAN_SIGLEVEL=1` to let it make that one
-change, keeping the original as `/etc/pacman.conf.prolewatch-bak`. It tightens
-the system rather than relaxing it: stock Arch installs unsigned local packages
-without complaint.
+`make dev-install` verifies the signature it just created against the
+development key home, so stock Arch's `LocalFileSigLevel = Optional` is fine and
+nothing is changed for you. `PROLEWATCH_SET_PACMAN_SIGLEVEL=1` still opts into
+the system-wide `Required TrustedOnly` policy, keeping the original as
+`/etc/pacman.conf.prolewatch-bak` — but be aware it rejects every unsigned local
+package, `makepkg` output included, so AUR installs fail until it is relaxed.
 
 Run `setup` from a fresh SSH login. `su` and `sudo -iu` may not create the PAM
 session even with lingering enabled, and `setup` fails before touching `yay`
