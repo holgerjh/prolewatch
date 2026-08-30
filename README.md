@@ -27,17 +27,17 @@ its root integration on screen, and the parts that need nobody's help to run
 stop and wait for you. Install scriptlets, pacman hooks, udev rules. Keep them,
 or strip them out of the archive.
 
-It hooks into `yay` instead of replacing it. `yay` still resolves the
+Prolewatch hooks into `yay` instead of replacing it. `yay` still resolves the
 transaction, `makepkg` still builds the package, and the final install stays
 your own `sudo pacman -U`. Prolewatch installs no daemon, socket, service,
 service account, `sudoers` entry, or setuid binary.
 
+**Prelease, not released as an AUR package yet**
+
 > [!WARNING]
 > Prolewatch is experimental and has not been independently audited. It does not
-> certify AUR packages as safe. It was written with AI assistance and its
-> maintainer has not yet read all of it line by line, see
-> [How this was built](#how-this-was-built). Compatibility across a
-> representative range of real AUR packages has not been measured. Start on an
+> certify AUR packages as safe. 
+> See [How this was built](#how-this-was-built) and, if in doubt, start on an
 > isolated Arch Linux system before relying on it.
 
 ## See it in action
@@ -553,20 +553,11 @@ prints both paths; the logs are pruned with report history.
 
 ## Project information
 
-`0.11.0` is the first public release. There are no earlier public versions: the
-number is where development arrived, not the eleventh release. There is no
-changelog yet for the same reason.
-
-Run the full local release gate with `make release-check`. It checks modules,
-vulnerabilities, race behavior, vet, shell scripts, public security scenarios,
-and security-code coverage, then builds deterministic Linux binaries and
-CycloneDX SBOMs. CI runs the same gate.
-
 Prolewatch is licensed under [GNU AGPL version 3 only](LICENSE)
 (`AGPL-3.0-only`). Commercial use is allowed under its terms. Third-party notices
-are collected in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES). External code
-contributions are paused while the licensing arrangement for outside patches is
-settled; issues, security reports, and design feedback remain welcome. See
+are collected in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
+
+Issues, security reports, and design feedback remain welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The name refers to the proles in George Orwell's *1984*: here, the watch belongs
