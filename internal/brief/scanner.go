@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // MarkerPrefix names the files Prolewatch writes into a checkout. Package code
@@ -75,8 +76,10 @@ type scanOptions struct {
 	// declares. The committed copy is maintainer-authored and can disagree with
 	// the recipe, so a package could show the user one set of sources and have
 	// acquisition fetch another - and the static comparison deliberately does
-	// not check remote declarations, because deriving them needs arbitrary Bash.
-	// The freeze already ran that Bash, contained; this is its answer.
+	// not check remote source declarations, because deriving them needs arbitrary
+	// Bash. It can still compare directly assigned, statically resolvable checksum
+	// arrays. The freeze already ran the arbitrary Bash, contained; this is its
+	// complete answer.
 	sourcePlan []byte
 	// sourceRoot is the transaction's source store, when one exists.
 	//
@@ -759,12 +762,20 @@ func sameLinkStat(a, b unix.Stat_t) bool {
 var scalarAssignmentRE = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)(\+?=)\s*(.*?)\s*$`)
 var srcFieldRE = regexp.MustCompile(`^\s*(pkgbase|pkgver|pkgrel|epoch|pkgdesc|url)\s*=\s*(.*?)\s*$`)
 var sourceFieldRE = regexp.MustCompile(`^\s*(source(?:_[A-Za-z0-9_]+)?|install)\s*=\s*(.*?)\s*$`)
+var checksumArrayNameRE = regexp.MustCompile(`^(?:b2|md5|sha1|sha224|sha256|sha384|sha512)sums(?:_[A-Za-z0-9_]+)?$`)
+var srcChecksumFieldRE = regexp.MustCompile(`^\s*((?:b2|md5|sha1|sha224|sha256|sha384|sha512)sums(?:_[A-Za-z0-9_]+)?)\s*=\s*(.*?)\s*$`)
 var remoteSourceRE = regexp.MustCompile(`^(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:git|svn|hg|bzr)\+)`)
+
+type srcChecksumField struct {
+	Values []string
+	Line   int
+}
 
 func (s *Scanner) compareSRCINFO(inv *Inventory) {
 	// .SRCINFO is generated metadata, not independent authority. Compare only
-	// statically evaluable PKGBUILD scalars and local-source paths; never execute
-	// Bash merely to improve this advisory consistency check.
+	// statically evaluable PKGBUILD scalars, literal checksum arrays, and
+	// local-source paths; never execute Bash merely to improve this advisory
+	// consistency check.
 	byPath := map[string]FileRecord{}
 	for _, item := range inv.Files {
 		byPath[item.Path] = item
@@ -789,6 +800,39 @@ func (s *Scanner) compareSRCINFO(inv *Inventory) {
 		if other, ok := srcFields[key]; ok && other != value {
 			inv.Findings = append(inv.Findings, Finding{Severity: "high", Category: "package_metadata", File: ".SRCINFO", Evidence: fmt.Sprintf("%s: %q != %q", key, other, value), Rationale: "static PKGBUILD metadata differs from .SRCINFO", RuleID: "srcinfo-mismatch"})
 		}
+	}
+	pkgChecksums := staticPKGBUILDChecksumArrays(pkg.SelectedText)
+	srcChecksums := map[string]srcChecksumField{}
+	for index, line := range strings.Split(src.SelectedText, "\n") {
+		match := srcChecksumFieldRE.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		field := srcChecksums[match[1]]
+		if field.Line == 0 {
+			field.Line = index + 1
+		}
+		field.Values = append(field.Values, match[2])
+		srcChecksums[match[1]] = field
+	}
+	checksumKeys := make([]string, 0, len(pkgChecksums))
+	for key := range pkgChecksums {
+		checksumKeys = append(checksumKeys, key)
+	}
+	sort.Strings(checksumKeys)
+	for _, key := range checksumKeys {
+		pkgValues := pkgChecksums[key]
+		srcField, present := srcChecksums[key]
+		if present && equalChecksumArrays(pkgValues, srcField.Values) {
+			continue
+		}
+		line := srcField.Line
+		evidence := truncate(fmt.Sprintf("%s: .SRCINFO %q != PKGBUILD %q", key, srcField.Values, pkgValues), 320)
+		finding := Finding{Severity: "high", Category: "package_metadata", File: ".SRCINFO", Evidence: evidence, Rationale: "static PKGBUILD metadata differs from .SRCINFO", RuleID: "srcinfo-mismatch"}
+		if line > 0 {
+			finding.Line = &line
+		}
+		inv.Findings = append(inv.Findings, finding)
 	}
 	known := map[string]bool{}
 	for _, item := range inv.Files {
@@ -817,6 +861,135 @@ func (s *Scanner) compareSRCINFO(inv *Inventory) {
 			inv.Findings = append(inv.Findings, Finding{Severity: "high", Category: "coverage", File: ".SRCINFO", Line: &ln, Evidence: truncate(value, 320), Rationale: "referenced local source or install file is missing from the inventory", RuleID: "source-reference-missing"})
 		}
 	}
+}
+
+func equalChecksumArrays(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		// Digest hex and makepkg's SKIP sentinel are case-insensitive. A
+		// generated file that changes only letter case still binds the same bytes.
+		if !strings.EqualFold(left[index], right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+// staticPKGBUILDChecksumArrays returns only checksum arrays whose final
+// top-level assignment can be determined without executing Bash. It uses the
+// Bash AST so multiline arrays and comments are parsed as syntax rather than
+// approximated with a regular expression. Unsupported, indexed, conditional,
+// or dynamic reassignments delete any earlier value instead of manufacturing a
+// mismatch from stale state.
+func staticPKGBUILDChecksumArrays(text string) map[string][]string {
+	parsed, err := syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true)).Parse(strings.NewReader(text), "PKGBUILD")
+	if err != nil {
+		return map[string][]string{}
+	}
+	variables := map[string]string{}
+	values := map[string][]string{}
+	for _, statement := range parsed.Stmts {
+		var assignments []*syntax.Assign
+		switch command := statement.Cmd.(type) {
+		case *syntax.CallExpr:
+			if len(command.Args) == 0 {
+				assignments = command.Assigns
+			}
+		case *syntax.DeclClause:
+			assignments = command.Args
+		}
+		if assignments == nil {
+			// A function declaration is inert until called. Any other top-level
+			// command can mutate shell globals directly, through eval, or through a
+			// called function, so no value established before it remains static.
+			if _, function := statement.Cmd.(*syntax.FuncDecl); !function {
+				clear(values)
+				clear(variables)
+			}
+			continue
+		}
+		for _, assignment := range assignments {
+			if assignment.Name == nil {
+				continue
+			}
+			name := assignment.Name.Value
+			if !checksumArrayNameRE.MatchString(name) {
+				applyStaticScalarAssignment(assignment, variables)
+				continue
+			}
+			resolved, ok := evaluateStaticChecksumArray(assignment, variables)
+			if !ok {
+				delete(values, name)
+				continue
+			}
+			if assignment.Append {
+				previous, known := values[name]
+				if !known || len(previous) > 4096-len(resolved) {
+					delete(values, name)
+					continue
+				}
+				resolved = append(append([]string(nil), previous...), resolved...)
+			}
+			values[name] = resolved
+		}
+	}
+	return values
+}
+
+func applyStaticScalarAssignment(assignment *syntax.Assign, variables map[string]string) {
+	name := assignment.Name.Value
+	if assignment.Naked || assignment.Index != nil || assignment.Array != nil || assignment.Value == nil {
+		delete(variables, name)
+		return
+	}
+	var rendered bytes.Buffer
+	if err := syntax.NewPrinter(syntax.Minify(true)).Print(&rendered, assignment.Value); err != nil || rendered.Len() > 8192 {
+		delete(variables, name)
+		return
+	}
+	value, ok := evaluateStaticShellScalar(rendered.String(), variables)
+	if !ok || len(value) > 8192 {
+		delete(variables, name)
+		return
+	}
+	if assignment.Append {
+		previous, known := variables[name]
+		if !known || len(previous) > 8192-len(value) {
+			delete(variables, name)
+			return
+		}
+		value = previous + value
+	}
+	if len(variables) >= 1024 {
+		if _, known := variables[name]; !known {
+			return
+		}
+	}
+	variables[name] = value
+}
+
+func evaluateStaticChecksumArray(assignment *syntax.Assign, variables map[string]string) ([]string, bool) {
+	if assignment.Index != nil || assignment.Value != nil || assignment.Array == nil || len(assignment.Array.Elems) > 4096 {
+		return nil, false
+	}
+	result := make([]string, 0, len(assignment.Array.Elems))
+	for _, element := range assignment.Array.Elems {
+		if element.Index != nil || element.Value == nil {
+			return nil, false
+		}
+		var rendered bytes.Buffer
+		if err := syntax.NewPrinter(syntax.Minify(true)).Print(&rendered, element.Value); err != nil || rendered.Len() > 8192 {
+			return nil, false
+		}
+		value, ok := evaluateStaticShellScalar(rendered.String(), variables)
+		if !ok || len(value) > 8192 {
+			return nil, false
+		}
+		result = append(result, value)
+	}
+	return result, true
 }
 
 // staticPKGBUILDScalars resolves only assignment syntax whose value can be

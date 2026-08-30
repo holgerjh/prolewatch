@@ -443,7 +443,11 @@ func runDoctorCommand(ctx context.Context, cfg Config, cfgErr error, args []stri
 		}
 		emit = func(check Check) { fmt.Println(renderer.checkLine(check)) }
 	}
-	checks := append(configuration, RunDoctorStream(ctx, cfg, !*noProbe, emit)...)
+	announce := func(string, string) {}
+	if stream {
+		announce = func(name, detail string) { fmt.Println(renderer.checkActionLine(name, detail)) }
+	}
+	checks := append(configuration, runDoctorStream(ctx, cfg, !*noProbe, emit, announce)...)
 	switch {
 	case *jsonOutput:
 		raw, _ := json.MarshalIndent(checks, "", "  ")

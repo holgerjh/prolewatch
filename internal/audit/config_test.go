@@ -304,11 +304,11 @@ func TestReviewerDefaultsAreDeliberate(t *testing.T) {
 	}
 }
 
-// TestDocumentedReviewerDefaultsMatchTheCode keeps the README honest about what
-// it tells users they are about to spend time and money on. A default changed
-// in code and not in prose is how documentation starts lying.
+// TestDocumentedReviewerDefaultsMatchTheCode keeps the AI guide honest about
+// what it tells users they are about to spend time and money on. A default
+// changed in code and not in prose is how documentation starts lying.
 func TestDocumentedReviewerDefaultsMatchTheCode(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("..", "..", "README.md"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "docs", "ai-review.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,19 +316,19 @@ func TestDocumentedReviewerDefaultsMatchTheCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readme := string(raw)
+	guide := string(raw)
 	cfg := DefaultConfig()
 	for _, value := range []string{
 		cfg.Providers.Codex.Model,
 		cfg.Providers.Anthropic.Model,
 		cfg.Providers.Codex.Effort,
 	} {
-		if !strings.Contains(readme, value) {
-			t.Fatalf("README does not document the default %q", value)
+		if !strings.Contains(guide, value) {
+			t.Fatalf("AI review guide does not document the default %q", value)
 		}
 	}
-	if !strings.Contains(readme, "moving alias") {
-		t.Fatal("README no longer explains that a default model is a moving alias")
+	if !strings.Contains(guide, "moving alias") {
+		t.Fatal("AI review guide no longer explains that a default model is a moving alias")
 	}
 }
 
@@ -352,7 +352,7 @@ func TestReadmeOffersTheNarrowEscapeBeforeTheWideOne(t *testing.T) {
 	readme := string(raw)
 
 	narrow := strings.Index(readme, "Building one package without Prolewatch")
-	wide := strings.Index(readme, "Deliberately remove the yay hook")
+	wide := strings.Index(readme, "prolewatch uninstall-hook")
 	if narrow < 0 {
 		t.Fatal("the per-package escape route is no longer documented")
 	}
@@ -375,7 +375,7 @@ func TestReadmeOffersTheNarrowEscapeBeforeTheWideOne(t *testing.T) {
 		}
 	}
 	// The absence of a global switch is the reason the narrow route exists.
-	if !strings.Contains(readme, "no global override") {
+	if !strings.Contains(flat, "no global override") {
 		t.Error("README no longer states that there is no global override")
 	}
 }
@@ -383,13 +383,13 @@ func TestReadmeOffersTheNarrowEscapeBeforeTheWideOne(t *testing.T) {
 // TestDocumentedCodexVersionRangeMatchesTheCode binds the supported Codex range
 // to the constants that enforce it.
 //
-// The README names an exact range, and the range moves every time Codex ships a
-// version worth supporting. Prose that repeats a constant goes stale silently:
-// the code would reject a version the documentation had just told the user to
-// install, and the failure would surface as "unsupported version" on a machine
-// set up exactly as instructed.
+// The AI guide names an exact range, and the range moves every time Codex ships
+// a version worth supporting. Prose that repeats a constant goes stale
+// silently: the code would reject a version the documentation had just told the
+// user to install, and the failure would surface as "unsupported version" on a
+// machine set up exactly as instructed.
 func TestDocumentedCodexVersionRangeMatchesTheCode(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("..", "..", "README.md"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "docs", "ai-review.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,18 +397,18 @@ func TestDocumentedCodexVersionRangeMatchesTheCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readme := string(raw)
+	guide := string(raw)
 	for _, version := range []string{MinCodexVersion, MaxCodexVersion} {
-		if !strings.Contains(readme, version) {
-			t.Errorf("README does not document the supported Codex version %q", version)
+		if !strings.Contains(guide, version) {
+			t.Errorf("AI review guide does not document the supported Codex version %q", version)
 		}
 	}
 	// The binary is hard-coded, never resolved through PATH, so a Codex
 	// installed elsewhere silently is not the one that runs.
-	if !strings.Contains(readme, codexHostBinary) {
-		t.Errorf("README does not name the required binary path %q", codexHostBinary)
+	if !strings.Contains(guide, codexHostBinary) {
+		t.Errorf("AI review guide does not name the required binary path %q", codexHostBinary)
 	}
-	if !strings.Contains(readme, "not searched for on `PATH`") {
-		t.Error("README no longer warns that the Codex path is not resolved through PATH")
+	if !strings.Contains(strings.Join(strings.Fields(guide), " "), "not searched for on `PATH`") {
+		t.Error("AI review guide no longer warns that the Codex path is not resolved through PATH")
 	}
 }

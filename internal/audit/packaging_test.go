@@ -75,6 +75,17 @@ func TestArchPackageInstallsEveryRequiredPayloadFile(t *testing.T) {
 	}
 }
 
+// AI setup deliberately moved out of the README. Keep the linked guide in the
+// installed documentation rather than shipping a README whose setup link ends
+// at a file pacman omitted.
+func TestArchPackageInstallsLinkedAIReviewGuide(t *testing.T) {
+	installed := packagedPaths(t, archRecipe(t))
+	const guide = "/usr/share/doc/prolewatch/docs/ai-review.md"
+	if !installed[guide] {
+		t.Fatalf("the Arch package does not install the README's AI setup guide at %s", guide)
+	}
+}
+
 // TestSystemConfigurationIsAPacmanBackupFile keeps an administrator's edits
 // from being replaced on upgrade. A configuration pacman owns without a backup
 // entry is overwritten, which silently reverts a deliberate policy change.

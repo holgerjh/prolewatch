@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -96,6 +97,12 @@ func (a ProviderAttestation) Validate(fingerprint string, metadata ProviderMetad
 func loadProviderAttestation(fingerprint string, metadata ProviderMetadata, provider, archive brief.ToolIdentity) error {
 	var attestation ProviderAttestation
 	if err := ReadJSONFile(providerAttestationPath(), 1024*1024, &attestation); err != nil {
+		// Keep strict decoding: an old or newer document must never be silently
+		// reinterpreted. The raw decoder error is not useful recovery guidance,
+		// though, especially for the v2 fields that v3 intentionally removed.
+		if strings.Contains(err.Error(), "json: unknown field") {
+			return errors.New("stored provider semantic attestation uses an incompatible schema; run 'prolewatch doctor' without --no-probe to replace it")
+		}
 		return fmt.Errorf("run 'prolewatch doctor' to create a provider semantic attestation: %w", err)
 	}
 	return attestation.Validate(fingerprint, metadata, provider, archive)

@@ -21,7 +21,8 @@ func TestSecurityScenarioCorpus(t *testing.T) {
 		"aur-2018-remote-pipeline": false, "aur-2025-remote-source": false,
 		"aur-2026-install-ecosystem": false, "aur-2026-atomic-arch": false,
 		"aur-2026-native-binary": false, "aur-2026-native-sudo": false,
-		"baseline-safe": false, "network-warning": false, "structural-escapes": false,
+		"baseline-safe": false, "network-warning": false, "srcinfo-checksum-mismatch": false,
+		"structural-escapes": false,
 	}
 	for _, result := range results {
 		if _, ok := required[result.Manifest.ID]; ok {

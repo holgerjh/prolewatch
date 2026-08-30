@@ -8,6 +8,7 @@ import (
 	"github.com/holgerjh/prolewatch/internal/safe"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -400,6 +401,39 @@ func TestStaticPKGBUILDScalarsResolveSimpleVariablesWithoutShell(t *testing.T) {
 	}
 }
 
+func TestStaticPKGBUILDChecksumArraysResolveOnlyFinalLiteralValues(t *testing.T) {
+	digestA := strings.Repeat("a", 64)
+	digestB := strings.Repeat("b", 128)
+	text := "_digest=" + digestA + "\n" +
+		"sha256sums=(\n  \"${_digest}\" # first source\n)\n" +
+		"_digest=" + strings.Repeat("c", 64) + "\n" +
+		"sha256sums+=('SKIP')\n" +
+		"sha512sums_x86_64=('" + digestB + "')\n"
+	arrays := staticPKGBUILDChecksumArrays(text)
+	if !equalChecksumArrays(arrays["sha256sums"], []string{digestA, "SKIP"}) || !equalChecksumArrays(arrays["sha512sums_x86_64"], []string{digestB}) {
+		t.Fatalf("static checksum arrays were not resolved: %#v", arrays)
+	}
+	withUnusedFunction := "sha256sums=('" + digestA + "')\nmutate() { sha256sums=('" + strings.Repeat("c", 64) + "'); }\n"
+	if !equalChecksumArrays(staticPKGBUILDChecksumArrays(withUnusedFunction)["sha256sums"], []string{digestA}) {
+		t.Fatal("an inert function declaration invalidated a top-level checksum")
+	}
+
+	for name, unsafe := range map[string]string{
+		"command substitution": "sha256sums=('" + digestA + "')\nsha256sums=(\"$(unknown)\")\n",
+		"unknown variable":     "sha256sums=('" + digestA + "')\nsha256sums=(\"$missing\")\n",
+		"conditional override": "sha256sums=('" + digestA + "')\nif true; then sha256sums=('" + strings.Repeat("c", 64) + "'); fi\n",
+		"indexed override":     "sha256sums=('" + digestA + "')\nsha256sums[0]='" + strings.Repeat("c", 64) + "'\n",
+		"conditional variable": "_digest=" + digestA + "\nif true; then _digest=" + strings.Repeat("c", 64) + "; fi\nsha256sums=(\"$_digest\")\n",
+		"indirect mutation":    "sha256sums=('" + digestA + "')\neval \"sha256sums=('" + strings.Repeat("c", 64) + "')\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := staticPKGBUILDChecksumArrays(unsafe)["sha256sums"]; ok {
+				t.Fatalf("dynamic reassignment retained a stale checksum: %q", unsafe)
+			}
+		})
+	}
+}
+
 func TestSRCINFOComparisonResolvesStaticVariables(t *testing.T) {
 	inv := &Inventory{Coverage: Coverage{Complete: true}, Files: []FileRecord{
 		{Path: "PKGBUILD", SelectedText: "pkgbase='cnrdrvcups-lb'\npkgbase+='-bin'\n_pkgver=6.30\n_suffix2=07\npkgver=${_pkgver}.1.${_suffix2}\npkgrel=1\n"},
@@ -413,6 +447,37 @@ func TestSRCINFOComparisonResolvesStaticVariables(t *testing.T) {
 	(&Scanner{}).compareSRCINFO(inv)
 	if findingByRule(inv.Findings, "srcinfo-mismatch") == nil {
 		t.Fatal("resolved metadata mismatch was not reported")
+	}
+}
+
+func TestSRCINFOComparisonDetectsLiteralChecksumMismatch(t *testing.T) {
+	digestA := strings.Repeat("a", 64)
+	digestB := strings.Repeat("b", 64)
+	makeInventory := func(pkgDigest, srcDigest string) *Inventory {
+		return &Inventory{Coverage: Coverage{Complete: true}, Files: []FileRecord{
+			{Path: "PKGBUILD", SelectedText: "pkgbase=demo\npkgver=1\npkgrel=1\nsource=('https://vendor.example.invalid/source.tar')\nsha256sums=('" + pkgDigest + "')\n"},
+			{Path: ".SRCINFO", SelectedText: "pkgbase = demo\npkgver = 1\npkgrel = 1\nsource = https://vendor.example.invalid/source.tar\nsha256sums = " + srcDigest + "\n"},
+		}}
+	}
+
+	matching := makeInventory(digestA, strings.ToUpper(digestA))
+	(&Scanner{}).compareSRCINFO(matching)
+	if findingByRule(matching.Findings, "srcinfo-mismatch") != nil {
+		t.Fatalf("matching checksum metadata was reported: %#v", matching.Findings)
+	}
+
+	mismatched := makeInventory(digestA, digestB)
+	(&Scanner{}).compareSRCINFO(mismatched)
+	finding := findingByRule(mismatched.Findings, "srcinfo-mismatch")
+	if finding == nil || finding.Severity != "high" || finding.Category != "package_metadata" || finding.File != ".SRCINFO" || finding.Line == nil || *finding.Line != 5 || !strings.Contains(finding.Evidence, digestA) || !strings.Contains(finding.Evidence, digestB) {
+		t.Fatalf("literal checksum mismatch was not precisely reported: %#v", mismatched.Findings)
+	}
+
+	dynamic := makeInventory(digestA, digestB)
+	dynamic.Files[0].SelectedText = strings.Replace(dynamic.Files[0].SelectedText, "('"+digestA+"')", "(\"$(unknown)\")", 1)
+	(&Scanner{}).compareSRCINFO(dynamic)
+	if findingByRule(dynamic.Findings, "srcinfo-mismatch") != nil {
+		t.Fatalf("dynamic checksum array produced a guessed mismatch: %#v", dynamic.Findings)
 	}
 }
 

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,7 +11,10 @@ import (
 	"github.com/holgerjh/prolewatch/internal/contain"
 )
 
-type doctorFakeAdapter struct{ metadata ProviderMetadata }
+type doctorFakeAdapter struct {
+	metadata   ProviderMetadata
+	credential string
+}
 
 func (a doctorFakeAdapter) Metadata(context.Context) (ProviderMetadata, error) {
 	return a.metadata, nil
@@ -18,7 +22,22 @@ func (a doctorFakeAdapter) Metadata(context.Context) (ProviderMetadata, error) {
 func (doctorFakeAdapter) Review(context.Context, ReviewSnapshot) (Verdict, error) {
 	return Verdict{}, nil
 }
-func (doctorFakeAdapter) CredentialPath() string { return "unused" }
+func (a doctorFakeAdapter) CredentialPath() string { return a.credential }
+
+type doctorActionReviewer struct {
+	metadata ProviderMetadata
+	before   func()
+}
+
+func (r doctorActionReviewer) Probe(context.Context) (ProviderMetadata, error) {
+	return r.metadata, nil
+}
+func (r doctorActionReviewer) Review(context.Context, string, string, *brief.Inventory, ReviewOptions) (ProviderMetadata, []Verdict, error) {
+	if r.before != nil {
+		r.before()
+	}
+	return r.metadata, []Verdict{{SchemaVersion: VerdictSchemaVersion, Verdict: "block", Confidence: "high", Summary: "prompt injection", Findings: []ReviewFinding{}, Guidance: []FindingGuidance{}, CoverageNotes: []string{}, PromptInjectionDetected: true}}, nil
+}
 
 func TestProviderSemanticCanaryUsesManifestBoundPKGBUILD(t *testing.T) {
 	inventory := providerSemanticCanaryInventory()
@@ -94,7 +113,11 @@ func TestNoProbeDoctorStillValidatesProviderAttestation(t *testing.T) {
 		doctorProviderCanary = previousCanary
 	}()
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli test", Model: "gpt", Effort: "high", AdapterPolicy: "test-v1"}
-	providerAdapterFactory = func(Config) providerAdapter { return doctorFakeAdapter{metadata: metadata} }
+	credential := providerCredentialPath("codex", "auth.json")
+	if err := AtomicWrite(credential, []byte("credential"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerAdapterFactory = func(Config) providerAdapter { return doctorFakeAdapter{metadata: metadata, credential: credential} }
 	reviewerCalled := false
 	reviewClientFactory = func(Config) ReviewClient {
 		reviewerCalled = true
@@ -154,6 +177,114 @@ func TestNoProbeDoctorStillValidatesProviderAttestation(t *testing.T) {
 	}
 }
 
+func TestDoctorNamesMissingAuthenticationAndSkipsDependentProbes(t *testing.T) {
+	withStateAndShare(t)
+	previousAdapter, previousReviewer, previousCanary := providerAdapterFactory, reviewClientFactory, doctorProviderCanary
+	defer func() {
+		providerAdapterFactory, reviewClientFactory, doctorProviderCanary = previousAdapter, previousReviewer, previousCanary
+	}()
+	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli test", Model: "gpt", Effort: "high", AdapterPolicy: "test-v1"}
+	credential := providerCredentialPath("codex", "auth.json")
+	providerAdapterFactory = func(Config) providerAdapter { return doctorFakeAdapter{metadata: metadata, credential: credential} }
+	canaryCalled, reviewerCalled := false, false
+	doctorProviderCanary = func(context.Context, Config) (ProviderMetadata, error) {
+		canaryCalled = true
+		return metadata, nil
+	}
+	reviewClientFactory = func(Config) ReviewClient {
+		reviewerCalled = true
+		return &fakeReviewer{}
+	}
+
+	checks := RunDoctor(context.Background(), aiConfig(), true)
+	byName := map[string]Check{}
+	for _, check := range checks {
+		byName[check.Name] = check
+	}
+	auth := byName[providerAuthCheckName]
+	if auth.OK || !auth.Required || !strings.Contains(auth.Detail, credential) || !strings.Contains(auth.Detail, "CODEX_HOME=") || !strings.Contains(auth.Detail, " login") {
+		t.Fatalf("missing credential check is not actionable: %+v", auth)
+	}
+	for _, name := range []string{"provider host/workspace isolation", "isolated provider semantic canary"} {
+		check := byName[name]
+		if check.OK || !strings.Contains(check.Detail, "not run: dedicated provider authentication failed") {
+			t.Errorf("dependent probe %q did not name the skipped prerequisite: %+v", name, check)
+		}
+	}
+	attestation := byName["provider semantic attestation"]
+	if attestation.OK || !strings.Contains(attestation.Detail, "not checked: dedicated provider authentication failed") || strings.Contains(attestation.Detail, "unknown field") {
+		t.Fatalf("attestation obscured the authentication prerequisite: %+v", attestation)
+	}
+	if canaryCalled || reviewerCalled {
+		t.Fatalf("doctor attempted provider work without authentication: canary=%t reviewer=%t", canaryCalled, reviewerCalled)
+	}
+}
+
+func TestDoctorAnnouncesSlowProviderChecksBeforeStartingThem(t *testing.T) {
+	withStateAndShare(t)
+	previousAdapter, previousReviewer, previousCodex, previousCanary := providerAdapterFactory, reviewClientFactory, codexHostBinary, doctorProviderCanary
+	defer func() {
+		providerAdapterFactory, reviewClientFactory, codexHostBinary, doctorProviderCanary = previousAdapter, previousReviewer, previousCodex, previousCanary
+	}()
+	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli test", Model: "gpt", Effort: "high", AdapterPolicy: "test-v1"}
+	credential := providerCredentialPath("codex", "auth.json")
+	if err := AtomicWrite(credential, []byte("credential"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providerAdapterFactory = func(Config) providerAdapter { return doctorFakeAdapter{metadata: metadata, credential: credential} }
+	codexHostBinary = writeExecutable(t, "echo codex")
+	announced := map[string]string{}
+	doctorProviderCanary = func(context.Context, Config) (ProviderMetadata, error) {
+		if announced["provider host/workspace isolation"] == "" {
+			t.Error("host/workspace action was not announced before the probe started")
+		}
+		return metadata, nil
+	}
+	reviewClientFactory = func(Config) ReviewClient {
+		return doctorActionReviewer{metadata: metadata, before: func() {
+			if announced["isolated provider semantic canary"] == "" {
+				t.Error("semantic action was not announced before the provider request started")
+			}
+		}}
+	}
+
+	runDoctorStream(context.Background(), aiConfig(), true, nil, func(name, detail string) {
+		announced[name] = detail
+	})
+	if !strings.Contains(announced["provider host/workspace isolation"], "up to 15s") {
+		t.Errorf("outer probe announcement omitted its wait bound: %q", announced["provider host/workspace isolation"])
+	}
+	if detail := announced["isolated provider semantic canary"]; !strings.Contains(detail, "codex/gpt") || !strings.Contains(detail, "timeout 180s") {
+		t.Errorf("semantic probe announcement omitted provider or timeout: %q", detail)
+	}
+}
+
+func TestLegacyProviderAttestationGetsClearUpgradeGuidance(t *testing.T) {
+	withStateAndShare(t)
+	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli test", Model: "gpt", Effort: "high", AdapterPolicy: "test-v1"}
+	provider := brief.ToolIdentity{Path: "/usr/bin/codex", Version: "v", SHA256: strings.Repeat("a", 64)}
+	archive := brief.ToolIdentity{Path: "/usr/bin/bsdtar", Version: "v", SHA256: strings.Repeat("b", 64)}
+	fingerprint := strings.Repeat("c", 64)
+	valid := ProviderAttestation{SchemaVersion: 1, CanaryVersion: providerCanaryVersion, CreatedAt: UTCNow(), PolicyFingerprint: fingerprint, Metadata: metadata, ProviderBinary: provider, ArchiveProbe: archive, Checks: CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}}
+	raw, err := CanonicalJSON(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy["checks"].(map[string]any)["no_tools"] = true
+	if err := AtomicWriteJSON(providerAttestationPath(), legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	err = loadProviderAttestation(fingerprint, metadata, provider, archive)
+	if err == nil || !strings.Contains(err.Error(), "incompatible schema") || !strings.Contains(err.Error(), "without --no-probe") || strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("legacy attestation did not get clear replacement guidance: %v", err)
+	}
+}
+
 // TestDoctorStreamsEveryCheckItReturns binds the property the live output
 // depends on: what the caller printed as checks arrived must be exactly the
 // set the verdict is then computed from.
@@ -198,6 +329,10 @@ func TestStreamedCheckLineMarksWarningsAsWarnings(t *testing.T) {
 	failure := renderer.checkLine(Check{Name: "yay Lua hook", OK: false, Required: true, Detail: "absent"})
 	if !strings.Contains(failure, "FAIL") {
 		t.Errorf("a required failure did not render as a failure: %q", failure)
+	}
+	action := renderer.checkActionLine("isolated provider semantic canary", "asking codex/gpt (timeout 180s)")
+	if !strings.Contains(action, "RUN") || !strings.Contains(action, "isolated provider semantic canary") || !strings.Contains(action, "timeout 180s") || strings.Contains(action, "OK") || strings.Contains(action, "FAIL") {
+		t.Errorf("a running provider action was not distinct from its eventual result: %q", action)
 	}
 	// The unstyled fallback renders one check, not a set: RenderChecks closes a
 	// passing set with a summary line that must not appear per check.

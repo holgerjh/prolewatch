@@ -1,0 +1,5 @@
+pkgbase = metadata-mismatch
+pkgver = 1
+pkgrel = 1
+source = https://vendor.example.invalid/metadata-mismatch-1.tar.gz
+sha256sums = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

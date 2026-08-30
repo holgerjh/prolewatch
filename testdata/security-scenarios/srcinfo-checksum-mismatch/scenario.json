@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "srcinfo-checksum-mismatch",
+  "title": "PKGBUILD and .SRCINFO checksum mismatch",
+  "incident": "Control case modeled after a real AUR metadata maintenance discrepancy",
+  "reference": "docs/security-scenarios.md#scenario-map",
+  "claim": "control",
+  "phase": "pre",
+  "expected": {
+    "decision": "block",
+    "approval_eligible": true,
+    "coverage_complete": true,
+    "exact_rule_ids": true,
+    "required_findings": [
+      {
+        "rule_id": "srcinfo-mismatch",
+        "severity": "high",
+        "hard_block": false
+      }
+    ]
+  },
+  "generated_files": []
+}

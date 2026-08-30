@@ -311,6 +311,16 @@ the package from those bytes. The pre briefing runs before any evaluation and
 still shows the committed metadata; that is what "before anything runs" means,
 and the post briefing is the one that precedes the build.
 
+There is one useful pre-evaluation subset that does not require guessing what
+Bash will do: direct checksum-array assignments whose elements reduce to static
+words. The recipe scan compares those `b2sums`, `sha*sums`, and `md5sums`
+arrays, including architecture suffixes, with the committed `.SRCINFO`. A
+difference is a HIGH `srcinfo-mismatch`: the metadata a reviewer or AUR helper
+reads names a different content binding from the one `makepkg` will enforce.
+Multiline literal arrays and static variable references are handled; command
+substitution, indexed or conditional reassignment, and any other unresolved
+shape are left unknown rather than guessed into a finding.
+
 `egress.FreezeDeclaredSources` is the single owner of that set. `Allowance` has
 unexported fields and no other constructor, because the way this requirement
 fails is not that somebody disagrees with it — it is that a second, cheaper

@@ -26,6 +26,7 @@ const (
 	doctorCommandTimeout     = 10 * time.Second
 	yayHookCheckName         = "yay Lua hook"
 	yayEffectiveCheckName    = "yay effective wrapper configuration"
+	providerAuthCheckName    = "dedicated provider authentication"
 )
 
 type Check struct {
@@ -66,7 +67,7 @@ var InstalledPayloadPaths = []string{
 }
 
 func RunDoctor(ctx context.Context, cfg Config, liveProbe bool) []Check {
-	return RunDoctorStream(ctx, cfg, liveProbe, nil)
+	return runDoctorStream(ctx, cfg, liveProbe, nil, nil)
 }
 
 // RunDoctorStream is RunDoctor with each check handed to emit the moment it
@@ -76,6 +77,13 @@ func RunDoctor(ctx context.Context, cfg Config, liveProbe bool) []Check {
 // this, doctor printed nothing until every check had finished, which on that
 // path is indistinguishable from a hang. emit may be nil.
 func RunDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(Check)) []Check {
+	return runDoctorStream(ctx, cfg, liveProbe, emit, nil)
+}
+
+// runDoctorStream also announces work before a slow check starts. Announcements
+// are presentation-only: they are not checks, do not affect the verdict, and
+// are omitted from batch and JSON output.
+func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(Check), announce func(string, string)) []Check {
 	// Doctor assembles independent evidence rather than stopping at the first
 	// failure, so operators can repair installation, sandbox, service, and policy
 	// boundaries in one pass. Required checks alone determine the final status.
@@ -143,20 +151,28 @@ func RunDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 		compatibility.Detail += "; " + metadata.CompatibilityWarning
 	}
 	record(compatibility)
+	authCheck, authErr := providerAuthenticationCheck(cfg, adapter)
+	record(authCheck)
 	var refreshErr error
-	if liveProbe && compatErr == nil && archiveErr == nil {
-		// A live canary establishes two properties, and the attestation records
-		// exactly those two. The outer bwrap hides host state and starts with an
+	if liveProbe && compatErr == nil && archiveErr == nil && authErr == nil {
+		// A live doctor establishes three observations, and the attestation records
+		// exactly those three. The outer bwrap hides host state and starts with an
 		// empty workspace; the provider recognises hostile prompt injection in
 		// its answer. Neither observes the provider's tool surface - see
 		// CanaryChecks - so neither is written down as if it had.
 		inventory := providerSemanticCanaryInventory()
+		if announce != nil {
+			announce("provider host/workspace isolation", "checking the empty workspace and hidden host sentinel (up to 15s)")
+		}
 		canaryMetadata, outerErr := doctorProviderCanary(ctx, cfg)
 		outerOK := outerErr == nil && canaryMetadata == metadata
 		if outerErr == nil && !outerOK {
 			outerErr = errors.New("provider metadata differs during the isolation canary")
 		}
 		record(Check{"provider host/workspace isolation", outerOK, true, valueOr(errorString(outerErr), "host sentinel hidden; workspace empty")})
+		if announce != nil {
+			announce("isolated provider semantic canary", fmt.Sprintf("asking %s/%s to assess the prompt-injection fixture (timeout %ds)", metadata.Provider, metadata.Model, cfg.Review.TimeoutSeconds))
+		}
 		reviewMetadata, verdicts, err := reviewClientFactory(cfg).Review(ctx, "doctor-probe", "pre", inventory, ReviewOptions{})
 		semanticOK := err == nil && len(verdicts) == 1 && reviewMetadata == metadata && verdicts[0].Verdict == "block" && verdicts[0].PromptInjectionDetected
 		semanticDetail := errorString(err)
@@ -176,12 +192,28 @@ func RunDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 				refreshErr = fingerprintErr
 			}
 		}
+	} else if liveProbe {
+		reason := "a prerequisite failed"
+		switch {
+		case compatErr != nil:
+			reason = "active provider compatibility failed"
+		case archiveErr != nil:
+			reason = "makepkg archive probe failed"
+		case authErr != nil:
+			reason = "dedicated provider authentication failed"
+		}
+		detail := "not run: " + reason
+		record(Check{"provider host/workspace isolation", false, true, detail})
+		record(Check{"isolated provider semantic canary", false, true, detail})
 	}
 	// Even --no-probe must validate the stored attestation: protected scans rely
 	// on it, while setup intentionally avoids spending a provider request.
 	attestationErr := compatErr
 	if attestationErr == nil {
 		attestationErr = archiveErr
+	}
+	if attestationErr == nil && authErr != nil {
+		attestationErr = errors.New("not checked: dedicated provider authentication failed; complete the authentication step above, then run 'prolewatch doctor' again")
 	}
 	if attestationErr == nil {
 		providerBinary, identityErr := providerBinaryIdentity(ctx, cfg, metadata)
@@ -199,6 +231,21 @@ func RunDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 	}
 	record(Check{"provider semantic attestation", attestationErr == nil, true, valueOr(errorString(attestationErr), providerAttestationPath())})
 	return checks
+}
+
+func providerAuthenticationCheck(cfg Config, adapter providerAdapter) (Check, error) {
+	path := adapter.CredentialPath()
+	err := validateCredential(path, uint32(providerEffectiveUID()))
+	if err == nil {
+		return Check{providerAuthCheckName, true, true, path}, nil
+	}
+	advice := "authenticate the dedicated provider home, then run 'prolewatch doctor' again"
+	if cfg.Provider == "codex" {
+		home := filepath.Dir(path)
+		advice = fmt.Sprintf("run: install -d -m 0700 %q; CODEX_HOME=%q /usr/bin/codex --config 'cli_auth_credentials_store=\"file\"' login; chmod 0600 %q; then run 'prolewatch doctor' again", home, home, path)
+	}
+	detail := fmt.Sprintf("%s: %v; %s", path, err, advice)
+	return Check{providerAuthCheckName, false, true, detail}, err
 }
 
 func yayHookCheck() Check {

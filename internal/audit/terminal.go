@@ -1040,6 +1040,20 @@ func (r terminalRenderer) checkLine(check Check) string {
 	return line
 }
 
+// checkActionLine precedes a slow doctor check with a durable status line. It
+// deliberately does not masquerade as a Check: only the later OK/FAIL line is
+// part of the machine-readable result and verdict.
+func (r terminalRenderer) checkActionLine(name, detail string) string {
+	if !r.enabled() {
+		return fmt.Sprintf("[RUN] %s: %s", terminalInline(name, 200), terminalInline(detail, 2000))
+	}
+	line := r.paint("amber", r.bullet()+" [RUN]") + " " + terminalInline(name, 200)
+	if detail != "" {
+		line += r.paint("muted", r.divider()) + terminalInline(detail, 2000)
+	}
+	return line
+}
+
 // checksHeading opens the streamed form, where the verdict cannot be in the
 // header because no check has run yet.
 func (r terminalRenderer) checksHeading() string {

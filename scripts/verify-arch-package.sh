@@ -56,6 +56,7 @@ allowed=${metadata}/allowed
   printf 'usr/share/prolewatch/%s\n' default-config.json prolewatch.lua review-prompt.md verdict.schema.json
   printf '%s\n' etc/prolewatch/config.json
   printf 'usr/share/doc/prolewatch/%s\n' README.md SECURITY.md architecture.md
+  printf '%s\n' usr/share/doc/prolewatch/docs/ai-review.md
   printf 'usr/share/licenses/prolewatch/%s\n' LICENSE THIRD_PARTY_NOTICES
 } | sort >"${allowed}"
 
@@ -99,10 +100,11 @@ usr/share/prolewatch/prolewatch.lua
 usr/share/prolewatch/review-prompt.md
 usr/share/prolewatch/verdict.schema.json
 etc/prolewatch/config.json
+usr/share/doc/prolewatch/docs/ai-review.md
 REQUIRED
 
 printf 'Signature, pacman policy, and architecture are valid.\n'
 printf 'Payload carries only the members the PKGBUILD declares: no scriptlet, unit, hook, loader or service directory, and no setuid bit.\n'
-printf 'Payload carries every file the installed commands need, including etc/prolewatch/config.json.\n'
+printf 'Payload carries every file the installed commands need and the AI setup guide linked from its README.\n'
 printf 'Install through the authenticated package-manager boundary:\n'
 printf '  sudo pacman -U -- %q\n' "${package}"
