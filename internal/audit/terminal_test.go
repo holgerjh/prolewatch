@@ -208,6 +208,37 @@ func TestTerminalReportGroupsOverviewAndShowsSuccessfulAIReview(t *testing.T) {
 	}
 }
 
+func TestInspectionFooterHintAppearsOnlyWhenNoPromptOwnsFindings(t *testing.T) {
+	report := &Report{
+		ReportID: "20260816T120000Z-aaaaaaaaaaaa-bbbbbbbb", PackageBase: "demo", Phase: "pre",
+		Decision: "allow", Disposition: "allow", Summary: "A warning is worth reading.", ContentHash: strings.Repeat("a", 64),
+		Reviewer: ReviewerReport{Mode: ReviewModeDeterministicOnly},
+		Findings: []brief.Finding{{Source: "deterministic", Severity: "medium", Category: "integrity", File: ".SRCINFO", Evidence: "source.tar: unbound", Rationale: "vendor source provenance is mutable", RuleID: "vendor-provenance-weak"}},
+	}
+	renderer := terminalRendererWithCapabilities(&bytes.Buffer{}, terminalCapabilities{Interactive: true, Unicode: true})
+	for name, rendered := range map[string]string{
+		"branded": renderer.reportWithPrompt(report, false),
+		"plain":   renderReportText(report, false),
+	} {
+		if !strings.Contains(rendered, "inspect: prolewatch inspect --latest") {
+			t.Fatalf("%s passing report with findings omitted inspection hint:\n%s", name, rendered)
+		}
+	}
+	for name, rendered := range map[string]string{
+		"branded prompt": renderer.reportWithPrompt(report, true),
+		"plain prompt":   renderReportText(report, true),
+	} {
+		if strings.Contains(rendered, "inspect: prolewatch inspect --latest") {
+			t.Fatalf("%s duplicated the prompt inspection route:\n%s", name, rendered)
+		}
+	}
+	clean := *report
+	clean.Findings = nil
+	if rendered := renderer.reportWithPrompt(&clean, false); strings.Contains(rendered, "inspect: prolewatch inspect --latest") {
+		t.Fatalf("finding-free report advertised inspection:\n%s", rendered)
+	}
+}
+
 func TestTerminalReportMarksCarriedFindingsWithoutChangingSeverityOrder(t *testing.T) {
 	criticalLine, lowLine := 7, 2
 	critical := brief.Finding{Severity: "critical", Source: "deterministic", Category: "obfuscation", File: "PKGBUILD", Line: &criticalLine, Rationale: "previously reviewed command", Evidence: "eval", RuleID: "critical-review"}
@@ -436,7 +467,7 @@ func TestTerminalGuardCompletionSeparatesYayOutput(t *testing.T) {
 		t.Fatalf("guard completion omitted the blue Prolewatch marker: %q", rendered)
 	}
 	plain := terminalRendererWithCapabilities(&bytes.Buffer{}, terminalCapabilities{})
-	if got, want := plain.guardComplete(report), "Prolewatch phase complete: demo / pre; control returned to yay"; got != want {
+	if got, want := plain.guardComplete(report), "Prolewatch phase complete: demo / pre; yay resumes · next: source acquisition"; got != want {
 		t.Fatalf("plain guard completion=%q, want %q", got, want)
 	}
 	if got := renderer.guardComplete(nil); got != "" {
@@ -458,6 +489,9 @@ func TestFullPackageReviewOwnsItsStartEndAndSuccessfulHandoff(t *testing.T) {
 		}
 	}
 	closing := rendered[strings.LastIndex(rendered, "\n")+1:]
+	if !strings.Contains(closing, "next: contained build") {
+		t.Fatalf("source handoff did not name the quiet next operation: %q", closing)
+	}
 	for _, want := range []string{"PACKAGE REVIEW ENDED", "stu-git · sources", "yay resumes"} {
 		if !strings.Contains(closing, want) {
 			t.Errorf("review closing line does not own %q: %q", want, closing)
@@ -468,6 +502,20 @@ func TestFullPackageReviewOwnsItsStartEndAndSuccessfulHandoff(t *testing.T) {
 	}
 	if standalone := renderer.report(report); strings.Contains(standalone, "yay resumes") || !strings.Contains(standalone, "PACKAGE REVIEW ENDED") {
 		t.Fatalf("standalone report claimed a yay handoff or lost its end boundary: %q", standalone)
+	}
+}
+
+func TestRunningLineAcknowledgesLongTransitions(t *testing.T) {
+	renderer := terminalRendererWithCapabilities(&bytes.Buffer{}, terminalCapabilities{Interactive: true, Unicode: true, Color: terminalColorTrue})
+	rendered := renderer.runningLine("Decision received · validating demo / built package against the exact snapshot")
+	for _, want := range []string{"Decision received", "validating demo / built package", "[ RUNNING ]"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("running transition omitted %q: %q", want, rendered)
+		}
+	}
+	plain := terminalRendererWithCapabilities(&bytes.Buffer{}, terminalCapabilities{})
+	if got := plain.runningLine("contained build starting"); got != "Prolewatch: contained build starting" {
+		t.Fatalf("plain running line=%q", got)
 	}
 }
 
@@ -680,6 +728,12 @@ func TestTerminalProgressLifecycle(t *testing.T) {
 	progress.SetPackage("renamed")
 	prepareTerminalOutput(ctx)
 	progressStage(ctx, StageComplete)
+	progress.mu.Lock()
+	resumed := !progress.suspended && progress.stage == StageComplete
+	progress.mu.Unlock()
+	if !resumed {
+		t.Fatal("a stage after terminal output did not resume the live progress line")
+	}
 	progress.Close()
 	progress.Close()
 	rendered := output.String()

@@ -90,9 +90,53 @@ func TestUnicodeObfuscationIgnoresHumanLanguageAssets(t *testing.T) {
 			t.Fatalf("human-language asset %q produced a Unicode obfuscation finding", name)
 		}
 	}
-	ids := findingIDs((RuleEngine{}).ScanText("install.sh", "Latin а U+\u0085\n", 0))
+	ids := findingIDs((RuleEngine{}).ScanText("install.sh", "Latіn U+\u0085\n", 0))
 	if !ids["unicode-control"] || !ids["unicode-confusable"] {
 		t.Fatalf("executable text lost Unicode obfuscation checks: %#v", ids)
+	}
+}
+
+func TestUnicodeConfusablesRequireOneMixedIdentifier(t *testing.T) {
+	separate := (RuleEngine{}).ScanText("table.c", "const char *script = \"Cyrillic і\";\n", 0)
+	if findingIDs(separate)["unicode-confusable"] {
+		t.Fatalf("standalone Unicode table data was classified as a mixed identifier: %#v", separate)
+	}
+	mixed := (RuleEngine{}).ScanText("script.py", "pаypal = token\n", 0)
+	if !findingIDs(mixed)["unicode-confusable"] {
+		t.Fatalf("a genuinely mixed identifier was not detected: %#v", mixed)
+	}
+}
+
+func TestUnicodeObfuscationSkipsInertArtifactDebugSources(t *testing.T) {
+	debugPath := "gtk2-debug.pkg.tar.zst!/usr/src/debug/gtk2/gdkkeyuni.c"
+	findings := (RuleEngine{}).ScanText(debugPath, "pаypal = 1\ntext\u0085control\n", 0)
+	ids := findingIDs(findings)
+	if ids["unicode-confusable"] || ids["unicode-control"] {
+		t.Fatalf("inert artifact debug source produced Unicode behavior findings: %#v", findings)
+	}
+	active := findingIDs((RuleEngine{}).ScanText("gtk2.pkg.tar.zst!/usr/lib/gtk2/plugin.py", "pаypal = 1\ntext\u0085control\n", 0))
+	if !active["unicode-confusable"] || !active["unicode-control"] {
+		t.Fatalf("installed executable source lost Unicode checks: %#v", active)
+	}
+}
+
+func TestSourceFormFeedIsFormattingNotObfuscation(t *testing.T) {
+	if findings := (RuleEngine{}).ScanText("source.c", "int before;\f int after;\n", 0); findingIDs(findings)["unicode-control"] {
+		t.Fatalf("source-code form feed was classified as concealed behavior: %#v", findings)
+	}
+}
+
+func TestLanguageBuildHookOnlyAppliesToControlContent(t *testing.T) {
+	if findings := (RuleEngine{}).ScanText("gtkassistant.c", "prepare:\n  return;\n", 0); findingIDs(findings)["language-build-hook"] {
+		t.Fatalf("ordinary C label was classified as a lifecycle hook: %#v", findings)
+	}
+	for name, text := range map[string]string{
+		"package.json":   `{"scripts":{"prepare":"node build.js"}}`,
+		"CMakeLists.txt": "add_custom_command(COMMAND generator)\n",
+	} {
+		if findings := (RuleEngine{}).ScanText(name, text, 0); !findingIDs(findings)["language-build-hook"] {
+			t.Fatalf("real lifecycle hook in %s was not detected: %#v", name, findings)
+		}
 	}
 }
 

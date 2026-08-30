@@ -53,7 +53,23 @@ stays yours.
   <a href="docs/images/prolewatch-basic.gif"><img src="docs/images/prolewatch-basic.gif" alt="Animated terminal demo of Prolewatch reviewing catclock-git, prompting before network access, and running makepkg in containment." width="1105"></a>
 </p>
 
-<p align="center"><em>Basic guarded transaction · <a href="docs/demos/prolewatch-basic.cast">sanitized asciicast source</a></em></p>
+<p align="center"><em>Basic guarded transaction</em></p>
+
+### What the package intends to run as root
+
+`gtk2` is about as ordinary as a package gets, and nothing in it is malicious.
+It also ships an install scriptlet and a pacman hook, and that hook runs as root
+on every pacman transaction you make from then on. You have almost certainly
+never seen either one.
+
+Prolewatch prints them before `pacman` receives the archive, with the code they
+would run, and lets you keep everything or strip what you did not ask for.
+
+<p align="center">
+  <a href="docs/images/prolewatch-root-gate.png"><img src="docs/images/prolewatch-root-gate.png" alt="Prolewatch's privileged-integration gate listing gtk2's install scriptlet and its pacman hook, each with the code it would run as root, above a keep-or-strip menu." width="1105"></a>
+</p>
+
+<p align="center"><em>The privileged-integration gate · gtk2 2.24.33-5</em></p>
 
 ### Detection, inspection, and AI guidance
 
@@ -67,39 +83,22 @@ raise a question. It never clears a deterministic finding.
   <a href="docs/images/prolewatch-ai-guidance.gif"><img src="docs/images/prolewatch-ai-guidance.gif" alt="Animated terminal demo of Prolewatch detecting eval statements in moon-buggy, opening read-only finding inspection, and showing contextual AI guidance." width="1105"></a>
 </p>
 
-<p align="center"><em>Detection and contextual guidance · <a href="docs/demos/prolewatch-ai-guidance.cast">sanitized asciicast source</a></em></p>
+<p align="center"><em>Detection and contextual guidance</em></p>
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Y(["yay transaction"]) --> I["inspect PKGBUILD and checkout<br/>deterministic rules + optional AI"]
-    I --> F["freeze and fetch<br/>declared sources"]
-    F --> B["contained build<br/>temporary home, no direct network,<br/>no capabilities, resource limits"]
-    B --> A["inspect exact source bytes<br/>and package artifact"]
-    A --> G["list root integration<br/>keep or strip selected surfaces"]
-    G --> P(["your sudo pacman -U"])
+Five controls sit between `yay` resolving a transaction and your own
+`sudo pacman -U`.
 
-    classDef control fill:#e7f0ff,stroke:#2855a6,color:#0b1b38,stroke-width:2px;
-    classDef contained fill:#e6f7ee,stroke:#18794e,color:#0c2d20,stroke-width:2px;
-    classDef choice fill:#fff6cc,stroke:#9a6700,color:#332300,stroke-width:2px;
-    classDef neutral fill:#f4f4f5,stroke:#71717a,color:#18181b,stroke-width:1px;
-    class I,F,A control;
-    class B contained;
-    class G choice;
-    class Y,P neutral;
-```
-
-### 1. The build gets a stranger's machine
+### 1. Containment first
 
 Package-controlled code runs in a user namespace with a temporary home,
 enumerated `/etc`, read-only `/usr`, no capabilities, private process and
 network namespaces, and hard limits on memory, CPU, tasks, runtime, file size,
 and the whole process tree.
 
-Your SSH keys, GnuPG directory, browser profiles, cloud credentials, shell
-startup files and host identity files are not guarded against the build. They
-are simply not there to read.
+Your SSH keys, GnuPG directory, browser profiles etc stay safe outside of the
+build's scope.
 
 That is why containment comes first: it does not have to recognise malicious
 code to limit what the build can reach.
@@ -122,15 +121,7 @@ its own.
 Prolewatch inventories the AUR checkout, the sources that arrived, and the
 finished package, then reports recognised behavior at full severity. Structurally
 decidable failures stop outright: archive traversal, escaping symlinks, special
-files, content-binding failures. No approval crosses those.
-
-Two refinements keep the noise down without weakening the scan. In a fully
-validated unified diff, removed hunk lines do not count as behavior the patch
-introduces or preserves, while malformed, ambiguous and oversized diffs keep the
-conservative raw scan. And within one live `yay` transaction, a deterministic
-finding you already approved at the recipe gate is still shown but not asked
-about again, as long as its complete file-manifest entry is unchanged. New
-findings still stop normally.
+files, content-binding failures.
 
 Vendor content is not scanned semantically by default (`vendor.scan_depth: 0`).
 Depth `1` scans direct vendor content, depth `2` opens one nested archive, and so
@@ -160,27 +151,25 @@ Setup, providers, cost and tuning live in [AI review](docs/ai-review.md).
 
 ### 5. The root gate
 
-Before installation, Prolewatch enumerates the known root-relevant surfaces in
-the finished `.pkg.tar.zst`: install scriptlets, `libalpm` hooks, systemd units
-and generators, `sysusers.d`, `tmpfiles.d`, udev, PAM, polkit, D-Bus policy, and
-`sudoers` drop-ins.
-
-Everything found is shown. The gate only *stops* for surfaces that run as root,
-or grant privilege, with no further step by anyone: the `.INSTALL` scriptlet,
-pacman hooks, udev rules, `sysusers.d`, `tmpfiles.d`, generators, `sudoers.d`. A
-systemd unit nobody has enabled, a user-session unit, a polkit action
-declaration, a PAM module nothing references: those are printed and passed.
+Before installation Prolewatch enumerates every known root-relevant surface in
+the finished `.pkg.tar.zst`, and shows all of them. It *stops* only for the ones
+that run as root, or grant privilege, with no further step by anyone: install
+scriptlets, `libalpm` hooks, udev rules, `sysusers.d`, `tmpfiles.d`, generators,
+`sudoers` drop-ins. A systemd unit nobody has enabled, a user-session unit, a
+polkit action declaration, a PAM module nothing references: those are printed
+and passed.
 
 That line is drawn on purpose. Asking about every ordinary service unit puts the
 same unanswerable question on the most common AUR package there is, and the
 reflex it trains gets paid back on the `.INSTALL` scriptlet that really does run
-as root today. When the gate does open, keep everything or strip any listed
-member from the archive before `yay` hands it to `pacman`.
+as root today.
 
-This is the part a build sandbox cannot do for you. Containment limits what the
-build could reach; the gate shows what the finished package intends to run as
-root. Because it is a question, a package carrying one of those surfaces needs a
-terminal, and an unattended install stops there.
+When the gate opens, keep everything or strip any listed member before `yay`
+hands the archive to `pacman`. A package carrying one of those surfaces needs a
+terminal, so an unattended install stops there.
+
+Containment limits what the build could reach. The gate shows what the finished
+package intends to run as root, which no build sandbox can do for you.
 
 ### What the outcomes mean
 
@@ -202,9 +191,9 @@ recipe and a hostile package are not the same event and should not look alike:
 | `SANDBOX ERROR` | Containment could not be established. This one is about Prolewatch or the host, not the package. |
 
 When a build fails, contained `makepkg` output is replayed in the order
-Prolewatch observed it across the two pipes, so the failure reads in the order it
-happened instead of with every error hoisted above the step that caused it.
-Successful phases still print each stream separately.
+Prolewatch observed it, so the failure reads in the order it happened instead of
+with every error hoisted above its cause. Successful phases print each stream
+separately.
 
 Approvals are one-time and bound to the exact content and policy shown. Network
 grants are bound to the transaction and the displayed destination. There is no
@@ -214,11 +203,10 @@ mode judges a package safe.
 
 ### Why not just run `yay` as a separate user
 
-A dedicated build account is the usual answer to keeping AUR builds away from
-your home, and it is a real improvement: package code no longer runs with your
-SSH keys, GnuPG directory, and browser profiles in reach. It is the honest
-baseline to measure against, so here is what a build still gets once it is on
-the other side of that account.
+A dedicated build account is the usual answer, and a real improvement: package
+code no longer runs with your SSH keys, GnuPG directory and browser profiles in
+reach. It is the honest baseline, so here is what a build still gets once it is
+on the other side of it.
 
 | | `yay` as a separate user | Prolewatch |
 | --- | --- | --- |
@@ -253,20 +241,20 @@ Run as the normal `yay` user, from an interactive shell:
 make dev-install
 ```
 
-That is the whole step. It creates the signing key if there is not one, trusts
-it in the pacman keyring, builds and signs the package, verifies it against the
-installed-file allow-list, and installs it. Re-running reuses the existing key,
-so it is also how you rebuild after a change.
+That is the whole step. It creates the signing key if there is not one, builds
+and signs the package, verifies that signature directly against the private
+development key home, checks the installed-file allow-list, and gives only the
+final `pacman -U` invocation that key home. Re-running reuses the existing key,
+so it is also how you rebuild after a change. The default path modifies neither
+the system pacman keyring nor `/etc/pacman.conf`.
 
-It will not edit `/etc/pacman.conf` on its own. The package verifier requires
-`LocalFileSigLevel = Required TrustedOnly`, which is stricter than the Arch
-default: stock `LocalFileSigLevel = Optional` installs an unsigned local package
-without complaint, so requiring a trusted signature is what makes your signature
-mean anything. It also applies to every later `pacman -U` on the system, which is
-why nothing changes it for you unless asked. If the setting is missing,
-`dev-install` says so and stops before spending a build. Add
-`PROLEWATCH_SET_PACMAN_SIGLEVEL=1` to let it make that one change, keeping the
-original beside it as `/etc/pacman.conf.prolewatch-bak`.
+Stock Arch uses `LocalFileSigLevel = Optional`. That does not make the direct
+verification above optional: `dev-install` performs it before installation and
+stops on a bad signature. Administrators may still opt into the system-wide
+`Required TrustedOnly` policy with `PROLEWATCH_SET_PACMAN_SIGLEVEL=1`; the old
+configuration is kept as `/etc/pacman.conf.prolewatch-bak`. Be aware that this
+policy rejects unsigned local packages, including normal `makepkg` output, so
+ordinary AUR installs fail until it is relaxed again.
 
 Prolewatch's own build is not protected by Prolewatch. It is installed before any
 of its controls exist, and for this release no maintainer signature covers that
@@ -277,7 +265,7 @@ first build either. Containment begins with the next AUR transaction.
 
 Reasonable for a security tool, and worth reading once either way.
 
-Create and trust the signing key once. `tty` must print a device path, not
+Create the signing key once. `tty` must print a device path, not
 `not a tty`. Use `pinentry-tty` rather than `pinentry-curses`: the curses dialog
 needs a minimum terminal size and fails with "Screen or window too small" on a
 small window or a serial console.
@@ -297,23 +285,22 @@ fingerprint="$(gpg --homedir "$dev_key_dir" --with-colons --list-secret-keys \
 printf '%s\n' "$fingerprint" > "$dev_key_dir/fingerprint"
 gpg --homedir "$dev_key_dir" --armor --export "$fingerprint" \
   > "$dev_key_dir/public-key.asc"
-sudo pacman-key --add "$dev_key_dir/public-key.asc"
-sudo pacman-key --lsign-key "$fingerprint"
 ```
 
-Set `LocalFileSigLevel = Required TrustedOnly` in `/etc/pacman.conf`, then build,
-verify, and install:
+Then build, verify, and install. Verification uses the development key home
+directly and does not depend on pacman's global local-file policy:
 
 ```bash
 make release-check
 make arch-package
 make verify-arch-package PACKAGE=/absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
-sudo pacman -U -- /absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
+sudo pacman --gpgdir "$dev_key_dir" -U -- /absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
 ```
 
 Use the exact `prolewatch-dev-*.pkg.tar.zst` path printed by `make arch-package`.
-`verify-arch-package` checks the built package against an allow-list of installed
-files. Installation modifies neither the pacman keyring nor `LocalFileSigLevel`.
+`verify-arch-package` verifies the detached signature and checks the built
+package against an allow-list of installed files. Installation modifies neither
+the pacman keyring nor `LocalFileSigLevel`.
 The package provides `prolewatch` and will conflict cleanly with a future release
 package.
 
@@ -403,11 +390,9 @@ prolewatch doctor
 ```
 
 Do not choose a numeric range yourself: overlaps let accounts map the same host
-IDs, and computing a free range before invoking `sudo` creates a race. `usermod`
-allocates under the system policy while managing the subordinate-ID databases.
-This delegation permits mappings inside user namespaces and grants no host root
-or capabilities. Prolewatch validates the allocation, and `doctor` exercises the
-real namespace before setup continues.
+IDs, and computing a free range before invoking `sudo` creates a race. The
+delegation permits mappings inside user namespaces and grants no host root or
+capabilities. `doctor` exercises the real namespace before setup continues.
 
 ### 3. Hook it into yay
 
@@ -456,9 +441,8 @@ Prolewatch only redirects `yay`. It installs no pacman hook and does not replace
 network prompt, or integration gate**: the package's build code runs as your
 user, with your `$HOME`, your SSH and GnuPG keys, and your network.
 
-Know this route precisely, because it is the narrow one. It costs one package and
-one deliberate act, and every later `yay` build stays contained. Removing the
-hook, below, is the wide one: it costs every future build until you put the hook
+That costs one package and one deliberate act, and every later `yay` build stays
+contained. Removing the hook, below, costs every future build until you put it
 back.
 
 #### Deliberately removing the yay hook
@@ -476,25 +460,23 @@ This removes Prolewatch's managed block from yay's `init.lua`. The managed
 a modified module and unrelated yay configuration or backups are preserved. It
 does not uninstall the Prolewatch package.
 
-Afterwards, yay builds run without Prolewatch containment, inspection, network
-prompts, or package review. Do not use it to bypass a finding or a structural
-failure. Once the compatibility problem is resolved, run `prolewatch setup` to
-recheck the prerequisites and reinstall the hook.
+Do not use it to bypass a finding or a structural failure. Once the
+compatibility problem is resolved, run `prolewatch setup` to recheck the
+prerequisites and reinstall the hook.
 
 ## How this was built
 
 Prolewatch was written with AI assistance, spanning implementation, tests and
 most of this documentation. I know that may seem discouraging for a security
-tool, which is why I am disclosing it here rather than leaving it to be
-discovered. I also know I would never have gotten this far this fast without it.
-The benefit is real, and I believe guarding the AUR will only become more
+tool, which is why I am disclosing it here. However, I also know I would never
+have gotten this far this fast without it. In addition, the benefit that
+prolewatch offers is real, and I believe guarding the AUR will only become more
 important.
 
 The design went through many iterations and received much improvement and many
-targeted corrections by me.
-
-The project was also challenged using AI. Three frontier models (Fable 5, Opus 5
-and gpt-5.6-sol) were used adversarially again and again against the codebase and
+targeted corrections by me. The project was also challenged using AI. Three
+frontier models (Fable 5, Opus 5 and gpt-5.6-sol) were used adversarially again
+and again against the codebase and
 the threat model, and their findings substantially drove what the design is now.
 Every commit passes a release gate: race-enabled tests, `govulncheck`, an
 import-direction layering check, a privileged-asset invariant, nine deterministic
@@ -520,9 +502,9 @@ root-integration surfaces visible. Five things it is not:
   source-host, signing-key, or upstream trust.
 - **The root-surface enumeration is maintained, not exhaustive.** Software
   already on the host can define another root-executed directory. Prolewatch also
-  inventories the `.pkg.tar.zst` with its own Go reader while `pacman` extracts it
-  with libarchive, and the two have not been compared against a differential
-  corpus, so the gate is an accurate account of what Prolewatch's reader saw.
+  reads the `.pkg.tar.zst` with its own Go reader while `pacman` extracts it with
+  libarchive, and the two have never been compared against a differential corpus.
+  The gate is an accurate account of what Prolewatch's reader saw.
 - **The hook belongs to your user.** Code that has already run as you can remove
   it, after which later AUR builds run unprotected.
 
@@ -548,10 +530,9 @@ detected. The complete table and claim boundaries are in the
 [scenario methodology](docs/security-scenarios.md).
 
 After installing the same version as the checkout and completing setup, the
-normal `yay` user can run `make installed-scenarios`. It checks the installed
-version and hook health, then evaluates the deterministic corpus through the
-installed binary. It does not execute fixture content, contact an AI provider,
-write reports or markers, or change the package database.
+normal `yay` user can run `make installed-scenarios`, which checks the installed
+version and hook health and then evaluates the same corpus through the installed
+binary, under the same restrictions.
 
 | I want to… | Read |
 | --- | --- |

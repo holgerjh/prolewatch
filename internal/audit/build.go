@@ -29,6 +29,19 @@ var trustedSystemUID uint32
 // Bubblewrap receives the build's user namespace on this descriptor.
 const sandboxUsernsFD = 3
 
+// containedPacmanConfig gives makepkg a deliberately empty package-manager
+// view while it writes .BUILDINFO. It names no repository or mirrorlist and its
+// DBPath is a tmpfs created by contain.Spec, never the host package database.
+const containedPacmanConfig = `[options]
+Architecture = auto
+DBPath = /var/lib/pacman/
+CacheDir = /tmp/pacman-cache/
+LogFile = /dev/null
+GPGDir = /tmp/pacman-gnupg/
+HookDir = /dev/null
+SigLevel = Never
+`
+
 func snapshotMakepkgConfigs(job string, invocation Invocation) ([][2]string, error) {
 	// A build must not read mutable host configuration after policy validation.
 	// Resolve only root-owned system config, copy a stable snapshot into the job,
@@ -80,7 +93,7 @@ func snapshotMakepkgConfigs(job string, invocation Invocation) ([][2]string, err
 	if err := os.Mkdir(dropinRoot, 0o700); err != nil {
 		return nil, err
 	}
-	result := make([][2]string, 0, 2)
+	result := make([][2]string, 0, 3)
 	for _, source := range sources {
 		input, err := openRootOwnedPath(source, false)
 		if err != nil {
@@ -113,6 +126,11 @@ func snapshotMakepkgConfigs(job string, invocation Invocation) ([][2]string, err
 		}
 	}
 	result = append(result, [2]string{dropinRoot, "/etc/makepkg.conf.d"})
+	pacmanConfig := filepath.Join(configRoot, "pacman.conf")
+	if err := os.WriteFile(pacmanConfig, []byte(containedPacmanConfig), 0o400); err != nil {
+		return nil, err
+	}
+	result = append(result, [2]string{pacmanConfig, "/etc/pacman.conf"})
 	return result, nil
 }
 
@@ -646,6 +664,10 @@ func RunMakepkg(ctx context.Context, args []string) int {
 	if progress != nil {
 		progress.SetNetwork(network, invocation.Profile == "build" && invocation.PersistentCargoHome)
 	}
+	if invocation.Profile == "build" {
+		prepareTerminalOutput(ctx)
+		fmt.Fprintln(os.Stderr, renderer.runningLine(terminalInline(report.PackageBase, 4096)+" · contained build starting; live status follows"))
+	}
 	// The build uses the host's /usr read-only rather than a clean root. This is
 	// no more exposure than plain yay provides and requires no privileged root
 	// preparation service. See docs/architecture.md control 1.
@@ -735,6 +757,8 @@ func RunMakepkg(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, renderer.phaseResult(refreshed, status, mode != "" && interactiveDecisionAvailable(), status == 0))
 		if status != 0 {
 			if mode != "" && confirmInlineDecision(mode, refreshed, nil, workdir, cfg.Review.ManualReviewMinimumSeverity) {
+				fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(refreshed.PackageBase, 4096)+" / "+phaseName(refreshed.Phase)+" against the exact snapshot"))
+				progressTimedStage(ctx, StageDecisionValidation, cfg.Limits.ScanTimeoutSeconds)
 				tokenPath, err := createInlineToken(mode, refreshed, service.Approvals)
 				if err != nil {
 					prepareTerminalOutput(ctx)
@@ -1534,9 +1558,10 @@ func runMakepkgSandbox(ctx context.Context, invocation Invocation, workdir strin
 	}
 
 	spec := contain.Spec{
-		Workdir:       workdir,
-		WorkdirTarget: "/build",
-		Env:           contain.BaseEnv(),
+		Workdir:             workdir,
+		WorkdirTarget:       "/build",
+		Env:                 contain.BaseEnv(),
+		EmptyPacmanDatabase: true,
 	}
 	for _, bind := range configBinds {
 		spec.ExtraROBinds = append(spec.ExtraROBinds, [2]string{bind[0], bind[1]})
@@ -1679,12 +1704,13 @@ func newMakepkgBrokerDirectory() (string, error) {
 
 // containedMakepkgArgs suppresses makepkg's redundant pacman -T dependency
 // probe for lifecycle phases yay has already dependency-resolved. The sandbox
-// intentionally exposes neither /etc/pacman.conf nor /var/lib/pacman: the first
-// describes administrator repositories and policy, while the second reveals
-// the exact installed-package inventory. Passing either through merely to
-// repeat yay's check would widen host fingerprinting and still add no build
-// dependency; missing tools fail naturally when the package actually uses
-// them. Verification and package-list queries do not run this probe.
+// never exposes the host's /etc/pacman.conf or /var/lib/pacman. The sandbox
+// instead gets a no-repository synthetic configuration and an empty tmpfs
+// database so makepkg can write .BUILDINFO without a misleading missing-config
+// error or an installed-package fingerprint. Passing the host views through
+// merely to repeat yay's check would widen host fingerprinting and still add no
+// build dependency; missing tools fail naturally when the package actually
+// uses them. Verification and package-list queries do not run this probe.
 func containedMakepkgArgs(invocation Invocation) []string {
 	args := append([]string(nil), invocation.Args...)
 	switch invocation.Profile {
@@ -1903,6 +1929,8 @@ func auditAndBind(ctx context.Context, packages []string, postReport *Report, se
 	if status != 0 {
 		mode := artifactMode
 		if mode != "" && confirmInlineDecision(mode, artifact, nil, "", service.Config.Review.ManualReviewMinimumSeverity) {
+			fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(artifact.PackageBase, 4096)+" / "+phaseName(artifact.Phase)+" against the exact snapshot"))
+			progressTimedStage(ctx, StageDecisionValidation, service.Config.Limits.ScanTimeoutSeconds)
 			tokenPath, err := createInlineToken(mode, artifact, service.Approvals)
 			if err != nil {
 				prepareTerminalOutput(ctx)
@@ -1964,6 +1992,7 @@ func auditAndBind(ctx context.Context, packages []string, postReport *Report, se
 	// It runs after verification and before yay receives any path, because a
 	// rewrite changes the bytes the briefing described - the transaction is
 	// re-bound to the rewritten archive below.
+	progressStage(ctx, StageRootSurfaceReview)
 	for _, pkg := range packages {
 		surfaces, err := gateEnumerator(ctx, pkg)
 		if err != nil {
@@ -2019,8 +2048,10 @@ func auditAndBind(ctx context.Context, packages []string, postReport *Report, se
 			return ExitPolicyBlock
 		}
 		if len(decision.Strip) == 0 {
+			progressStage(ctx, StageArtifactBinding)
 			continue
 		}
+		progressStage(ctx, StageArtifactRewrite)
 		target, err := filteredPackagePath(pkg)
 		if err != nil {
 			return artifactFailure(ctx, packages, artifact, err)
@@ -2052,6 +2083,7 @@ func auditAndBind(ctx context.Context, packages []string, postReport *Report, se
 			SHA256:  rebound,
 		})
 	}
+	progressStage(ctx, StageArtifactBinding)
 	for _, pkg := range packages {
 		artifact.ArtifactBindings = append(artifact.ArtifactBindings, ArtifactBinding{pkg, verified[pkg]})
 	}

@@ -7,9 +7,9 @@
 # a disposable acceptance system asks for: reset the VM, run this, get a
 # verified package installed.
 #
-# What it will not do: edit /etc/pacman.conf. LocalFileSigLevel is a system
-# trust policy, and a script that quietly relaxes the check that makes its own
-# output trustworthy has defeated the point. It reports and stops instead.
+# What it will not do by default: edit /etc/pacman.conf or the system pacman
+# keyring. The package is verified against its private development key home,
+# and the same key home is passed only to the final pacman invocation.
 set -euo pipefail
 umask 022
 
@@ -57,20 +57,9 @@ else
   printf 'Created %s\n' "${fingerprint}"
 fi
 
-# 2. Trust it in the pacman keyring. Local to this machine, and the reason
-#    pacman will accept the package built below.
-if sudo pacman-key --list-keys "${fingerprint}" >/dev/null 2>&1; then
-  step 'Key already trusted by the pacman keyring'
-else
-  step 'Trusting the key in the pacman keyring (needs sudo)'
-  [[ -f ${key_home}/public-key.asc ]] ||
-    gpg --homedir "${key_home}" --armor --export "${fingerprint}" >"${key_home}/public-key.asc"
-  sudo pacman-key --add "${key_home}/public-key.asc"
-  sudo pacman-key --lsign-key "${fingerprint}"
-fi
-
-# 3. Fail here rather than after a full build. Same condition
-#    verify-arch-package.sh enforces, checked before spending the time.
+# 2. LocalFileSigLevel is a system-wide policy, not a prerequisite for direct
+#    verification. Preserve the old explicit opt-in for administrators who want
+#    it, but never make the default installation depend on that choice.
 siglevel_ok() {
   local policy
   policy=$(pacman-conf LocalFileSigLevel 2>/dev/null || true)
@@ -78,45 +67,19 @@ siglevel_ok() {
     ${policy} != *Optional* && ${policy} != *TrustAll* && ${policy} != *Never* ]]
 }
 
-if ! siglevel_ok; then
-  # Note the direction: stock Arch ships LocalFileSigLevel = Optional, which
-  # installs an unsigned local package without complaint. Required TrustedOnly
-  # is strictly tighter, and it is what makes the signature created above mean
-  # anything at all. This still is not done silently - it is a system-wide
-  # policy affecting every later `pacman -U`, so it is the administrator's call.
-  printf 'Pacman does not require trusted signatures for local files: %s\n\n' \
-    "$(pacman-conf LocalFileSigLevel 2>/dev/null | tr '\n' ' ')" >&2
-  if [[ ${PROLEWATCH_SET_PACMAN_SIGLEVEL:-0} == 1 ]]; then
-    step 'Setting LocalFileSigLevel = Required TrustedOnly (needs sudo)'
-    if grep -qE '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel' /etc/pacman.conf; then
-      sudo sed -i.prolewatch-bak -E \
-        's|^[[:space:]]*#?[[:space:]]*LocalFileSigLevel.*|LocalFileSigLevel = Required TrustedOnly|' \
-        /etc/pacman.conf
-    else
-      sudo sed -i.prolewatch-bak \
-        '0,/^\[options\]/s//[options]\nLocalFileSigLevel = Required TrustedOnly/' \
-        /etc/pacman.conf
-    fi
-    printf 'Previous file kept at /etc/pacman.conf.prolewatch-bak\n'
-    siglevel_ok || fail 'the edit did not take; set LocalFileSigLevel by hand'
+if ! siglevel_ok && [[ ${PROLEWATCH_SET_PACMAN_SIGLEVEL:-0} == 1 ]]; then
+  step 'Setting LocalFileSigLevel = Required TrustedOnly (needs sudo)'
+  if grep -qE '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel' /etc/pacman.conf; then
+    sudo sed -i.prolewatch-bak -E \
+      's|^[[:space:]]*#?[[:space:]]*LocalFileSigLevel.*|LocalFileSigLevel = Required TrustedOnly|' \
+      /etc/pacman.conf
   else
-    cat >&2 <<'HINT'
-This tightens the system rather than relaxing it: the default accepts unsigned
-local packages, and Required TrustedOnly is what makes a signature mean
-anything. It affects every later `pacman -U`, so it is not changed for you
-unless you ask.
-
-Either edit /etc/pacman.conf by hand:
-
-  LocalFileSigLevel = Required TrustedOnly
-
-or re-run and let this do it, keeping a backup beside the original:
-
-  PROLEWATCH_SET_PACMAN_SIGLEVEL=1 make dev-install
-
-HINT
-    fail 'refusing to build a package pacman would install unverified'
+    sudo sed -i.prolewatch-bak \
+      '0,/^\[options\]/s//[options]\nLocalFileSigLevel = Required TrustedOnly/' \
+      /etc/pacman.conf
   fi
+  printf 'Previous file kept at /etc/pacman.conf.prolewatch-bak\n'
+  siglevel_ok || fail 'the edit did not take; set LocalFileSigLevel by hand'
 fi
 
 step 'Building the signed development package'
@@ -130,7 +93,7 @@ step "Verifying ${package##*/}"
 "${project_dir}/scripts/verify-arch-package.sh" "${package}"
 
 step 'Installing (needs sudo)'
-sudo pacman -U --noconfirm -- "${package}"
+sudo pacman --gpgdir "${key_home}" -U --noconfirm -- "${package}"
 
 step 'Installed'
 cat <<EOF

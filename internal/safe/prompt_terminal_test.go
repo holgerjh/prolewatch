@@ -237,6 +237,66 @@ func TestPromptChoiceCanReturnANonAuthorizingViewAction(t *testing.T) {
 	}
 }
 
+func TestChoiceOrLineAcceptsImmediateActionWithoutEnter(t *testing.T) {
+	controller, follower := openPTY(t)
+	terminal := &PromptTerminal{File: follower}
+	type result struct {
+		answer string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		answer, err := terminal.ReadChoiceOrLine(2*time.Second, "ksc", 'k', "0123456789, ", 4096)
+		done <- result{answer: answer, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := controller.WriteString("k"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.answer != "k" {
+			t.Fatalf("single k key returned answer=%q err=%v", got.answer, got.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("single k key still waited for Enter")
+	}
+}
+
+func TestChoiceOrLineRetainsCommaSeparatedSelections(t *testing.T) {
+	controller, follower := openPTY(t)
+	terminal := &PromptTerminal{File: follower}
+	type result struct {
+		answer string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		answer, err := terminal.ReadChoiceOrLine(2*time.Second, "ksc", 'k', "0123456789, ", 4096)
+		done <- result{answer: answer, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := controller.WriteString("1,2"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("numeric prefix completed before Enter: %+v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := controller.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.answer != "1,2" {
+			t.Fatalf("number list returned answer=%q err=%v", got.answer, got.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("number list did not finish on Enter")
+	}
+}
+
 func TestYesNoPromptKeepsItsOverallTimeout(t *testing.T) {
 	_, follower := openPTY(t)
 	terminal := &PromptTerminal{File: follower}

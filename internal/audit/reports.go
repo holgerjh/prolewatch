@@ -67,30 +67,34 @@ type Report struct {
 	// A report is evidence bound to exact content, policy, implementation, and
 	// process identity. Decision fields protect honest-user workflow; root-side
 	// operations never treat them as privileged authorization.
-	SchemaVersion      int               `json:"schema_version"`
-	ReportID           string            `json:"report_id"`
-	CreatedAt          string            `json:"created_at"`
-	Transaction        ProcessIdentity   `json:"transaction"`
-	PackageBase        string            `json:"package_base"`
-	Phase              string            `json:"phase"`
-	Decision           string            `json:"decision"`
-	Disposition        string            `json:"disposition"`
-	Summary            string            `json:"summary"`
-	ContentHash        string            `json:"content_hash"`
-	PolicyFingerprint  string            `json:"policy_fingerprint"`
-	ScannerVersion     int               `json:"scanner_version"`
-	RulesVersion       int               `json:"rules_version"`
-	ApplicationVersion string            `json:"application_version"`
-	Reviewer           ReviewerReport    `json:"reviewer"`
-	Coverage           brief.Coverage    `json:"coverage"`
-	Exclusions         []string          `json:"exclusions"`
-	Manifest           []map[string]any  `json:"manifest"`
-	Findings           []brief.Finding   `json:"findings"`
-	Overridden         bool              `json:"overridden"`
-	ApprovalEligible   bool              `json:"approval_eligible"`
-	NetworkEligible    bool              `json:"network_eligible"`
-	CarriedDecision    *CarriedDecision  `json:"carried_decision,omitempty"`
-	ArtifactBindings   []ArtifactBinding `json:"artifact_bindings,omitempty"`
+	SchemaVersion      int              `json:"schema_version"`
+	ReportID           string           `json:"report_id"`
+	CreatedAt          string           `json:"created_at"`
+	Transaction        ProcessIdentity  `json:"transaction"`
+	PackageBase        string           `json:"package_base"`
+	Phase              string           `json:"phase"`
+	Decision           string           `json:"decision"`
+	Disposition        string           `json:"disposition"`
+	Summary            string           `json:"summary"`
+	ContentHash        string           `json:"content_hash"`
+	PolicyFingerprint  string           `json:"policy_fingerprint"`
+	ScannerVersion     int              `json:"scanner_version"`
+	RulesVersion       int              `json:"rules_version"`
+	ApplicationVersion string           `json:"application_version"`
+	Reviewer           ReviewerReport   `json:"reviewer"`
+	Coverage           brief.Coverage   `json:"coverage"`
+	Exclusions         []string         `json:"exclusions"`
+	Manifest           []map[string]any `json:"manifest"`
+	// ReviewRoot is a convenience hint for reopening finding context. It is
+	// never authority: every read is revalidated against Manifest before any
+	// source byte is shown.
+	ReviewRoot       string            `json:"review_root,omitempty"`
+	Findings         []brief.Finding   `json:"findings"`
+	Overridden       bool              `json:"overridden"`
+	ApprovalEligible bool              `json:"approval_eligible"`
+	NetworkEligible  bool              `json:"network_eligible"`
+	CarriedDecision  *CarriedDecision  `json:"carried_decision,omitempty"`
+	ArtifactBindings []ArtifactBinding `json:"artifact_bindings,omitempty"`
 	// AcquiredHosts is every host contacted while retrieving declared sources,
 	// redirect hops included. It is reported, never prompted on: hop chains
 	// drift benignly and often, so a question about them would fire routinely
@@ -163,6 +167,9 @@ func (r Report) Validate() error {
 	}
 	if err := validateCoverage(r.Coverage); err != nil {
 		return err
+	}
+	if r.ReviewRoot != "" && (!filepath.IsAbs(r.ReviewRoot) || len(r.ReviewRoot) > 8192 || strings.IndexByte(r.ReviewRoot, 0) >= 0) {
+		return errors.New("invalid report review root")
 	}
 	// These generous ceilings are deserialization/validation budgets for stored
 	// evidence. Tighter scanner limits normally keep production reports far
@@ -637,7 +644,11 @@ func renderReportText(report *Report, promptFollows bool) string {
 	if content == "" {
 		content = "unavailable"
 	}
-	lines = append(lines, "Report: "+terminalInline(report.ReportID, 4096), "Content SHA-256: "+content)
+	reportLine := "Report: " + terminalInline(report.ReportID, 4096)
+	if reportInspectionHint(report, promptFollows) {
+		reportLine += " · inspect: prolewatch inspect --latest"
+	}
+	lines = append(lines, reportLine, "Content SHA-256: "+content)
 	return strings.Join(lines, "\n") + "\n"
 }
 

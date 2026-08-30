@@ -258,6 +258,25 @@ func sourceProvenanceFindings(sources []SourceProvenance) []Finding {
 	return findings
 }
 
+// invalidateFixedDigestBindings removes checksum bindings learned from stale
+// generated metadata. It returns warnings only for entries changed by this
+// call, so callers can add them after an earlier provenance pass without
+// duplicating warnings for sources that were already unbound.
+func invalidateFixedDigestBindings(sources []SourceProvenance) []Finding {
+	changed := make([]SourceProvenance, 0, len(sources))
+	for index := range sources {
+		source := &sources[index]
+		if source.Binding != "fixed-digest" {
+			continue
+		}
+		source.Binding = "unbound"
+		source.DeclaredAlgorithm = ""
+		source.DeclaredDigest = ""
+		changed = append(changed, *source)
+	}
+	return sourceProvenanceFindings(changed)
+}
+
 func bindObservedSources(inv *Inventory) {
 	// Bind a file source by its file digest and a VCS/directory source by canonical
 	// metadata for every descendant. Archive-member pseudo-records are omitted
@@ -351,10 +370,14 @@ func SourceSummary(sources []SourceProvenance, verification SourceVerification) 
 	if depth > 0 {
 		policy = fmt.Sprintf("content inspected to depth %d", depth)
 	}
-	result := fmt.Sprintf("%d pinned to exact bytes", fixed)
-	if weak > 0 {
-		result += fmt.Sprintf(", %d mutable", weak)
+	parts := []string{}
+	if fixed > 0 {
+		parts = append(parts, fmt.Sprintf("%d pinned to exact bytes", fixed))
 	}
+	if weak > 0 {
+		parts = append(parts, fmt.Sprintf("%d mutable", weak))
+	}
+	result := strings.Join(parts, ", ")
 	result += " · " + policy
 	if verification.Checksums != "" && verification.Checksums != "unknown" {
 		result += " · checksums " + verification.Checksums

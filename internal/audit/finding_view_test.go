@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,5 +129,111 @@ func TestFindingPreviewShowsPendingBeforeCarriedContext(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "previously approved line") || !strings.Contains(rendered, "exact bytes unchanged") {
 		t.Fatalf("inspection hid the carried context:\n%s", rendered)
+	}
+}
+
+func TestAllFindingPreviewIncludesBelowThresholdAndLineLessGuidance(t *testing.T) {
+	root := t.TempDir()
+	report := findingPreviewFixture(t, root, "PKGBUILD", []byte("low detail\neval command\n"), 2)
+	lowLine := 1
+	low := brief.Finding{Source: "deterministic", Severity: "low", Category: "other", File: "PKGBUILD", Line: &lowLine, Evidence: "low detail", Rationale: "below the decision threshold", RuleID: "low-detail"}
+	lineLess := brief.Finding{Source: "deterministic", Severity: "medium", Category: "integrity", File: ".SRCINFO", Evidence: "source.tar: unbound", Rationale: "vendor source provenance is mutable", RuleID: "vendor-provenance-weak"}
+	report.Findings = append(report.Findings, lineLess, low)
+	report.Reviewer.Verdicts[0].Guidance = append(report.Reviewer.Verdicts[0].Guidance, FindingGuidance{
+		FindingID: findingGuidanceID(lineLess), Assessment: "unclear", Comment: "The committed checksum metadata disagrees with the recipe.", AnchorQuote: "source.tar: unbound",
+	})
+
+	decision := renderFindingPreview(report, root, "high", terminalRenderer{})
+	if strings.Contains(decision, lineLess.Rationale) || strings.Contains(decision, low.Rationale) {
+		t.Fatalf("decision-only inspection widened below its threshold:\n%s", decision)
+	}
+	all := renderAllFindingPreview(report, root, terminalRenderer{}, 0)
+	for _, want := range []string{low.Rationale, lineLess.Rationale, ".SRCINFO · integrity · rule vendor-provenance-weak · no source line recorded", "Evidence · source.tar: unbound", "unclear · The committed checksum metadata disagrees with the recipe."} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("all-findings inspection omitted %q:\n%s", want, all)
+		}
+	}
+}
+
+func TestArtifactDecisionPreviewIsThresholdFilteredMetadataOnly(t *testing.T) {
+	root := t.TempDir()
+	report := findingPreviewFixture(t, root, "archive-member.py", []byte("dangerous()\n"), 1)
+	report.Phase = "artifact"
+	report.Findings[0].File = "demo.pkg.tar.zst!/usr/lib/demo/archive-member.py"
+	report.Findings[0].Evidence = "group-writable pickle is loaded as root"
+	report.Findings[0].Rationale = "automatic root execution consumes group-writable state"
+	report.Findings[0].Severity = "critical"
+	report.Findings[0].RuleID = "artifact-root-state"
+	report.Reviewer.Verdicts[0].Guidance[0].FindingID = findingGuidanceID(report.Findings[0])
+	report.Reviewer.Verdicts[0].Guidance[0].Comment = "The archive combines a root hook with mutable serialized state."
+	medium := brief.Finding{Source: "deterministic", Severity: "medium", Category: "persistence", File: "demo.pkg.tar.zst!/usr/share/libalpm/hooks/demo.hook", Evidence: "PreTransaction", Rationale: "package installs a pacman hook", RuleID: "artifact-hook"}
+	report.Findings = append(report.Findings, medium)
+
+	high := renderMetadataFindingPreview(report, "high", terminalRenderer{}, findingPreviewMaxFiles)
+	for _, want := range []string{
+		"CRITICAL (deterministic) · automatic root execution consumes group-writable state",
+		"demo.pkg.tar.zst!/usr/lib/demo/archive-member.py:1 · obfuscation",
+		"source context unavailable",
+		"Evidence · group-writable pickle is loaded as root",
+		"likely benign · The archive combines a root hook with mutable serialized state.",
+	} {
+		if !strings.Contains(high, want) {
+			t.Fatalf("artifact decision inspection omitted %q:\n%s", want, high)
+		}
+	}
+	if strings.Contains(high, "dangerous()") || strings.Contains(high, "SHA-256 verified") || strings.Contains(high, medium.Rationale) {
+		t.Fatalf("artifact decision inspection exposed an excerpt or widened its threshold:\n%s", high)
+	}
+
+	mediumView := renderMetadataFindingPreview(report, "medium", terminalRenderer{}, findingPreviewMaxFiles)
+	if !strings.Contains(mediumView, medium.Rationale) || !strings.Contains(mediumView, "no source line recorded") {
+		t.Fatalf("artifact MEDIUM+ inspection omitted line-less metadata:\n%s", mediumView)
+	}
+}
+
+func TestInlinePreviewActionsKeepArtifactAndRecipeSemanticsSeparate(t *testing.T) {
+	root := t.TempDir()
+	report := findingPreviewFixture(t, root, "PKGBUILD", []byte("eval command\n"), 1)
+
+	recipe := inlineFindingPreviewActions(report, root, "high", terminalRenderer{})
+	if recipe.decision == nil || recipe.all == nil || recipe.allCount != 1 {
+		t.Fatalf("recipe preview actions missing: %#v", recipe)
+	}
+	if rendered := recipe.decision(); !strings.Contains(rendered, "SHA-256 verified") || !strings.Contains(rendered, "eval command") {
+		t.Fatalf("recipe [i] lost its manifest-bound excerpt:\n%s", rendered)
+	}
+
+	report.Phase = "artifact"
+	artifact := inlineFindingPreviewActions(report, root, "high", terminalRenderer{})
+	if artifact.decision == nil || artifact.all == nil || artifact.allCount != 1 {
+		t.Fatalf("artifact preview actions missing: %#v", artifact)
+	}
+	if rendered := artifact.decision(); strings.Contains(rendered, "SHA-256 verified") || strings.Contains(rendered, "eval command") || !strings.Contains(rendered, "source context unavailable") {
+		t.Fatalf("artifact [i] was not metadata-only:\n%s", rendered)
+	}
+
+	mediumLine := 1
+	report.Findings = []brief.Finding{{Source: "deterministic", Severity: "medium", Category: "other", File: "member", Line: &mediumLine, Rationale: "medium decision", RuleID: "medium"}}
+	if actions := inlineFindingPreviewActions(report, root, "high", terminalRenderer{}); actions.decision != nil || actions.all == nil {
+		t.Fatalf("HIGH artifact action included a MEDIUM finding: %#v", actions)
+	}
+	if actions := inlineFindingPreviewActions(report, root, "medium", terminalRenderer{}); actions.decision == nil || !strings.Contains(actions.decision(), "medium decision") {
+		t.Fatalf("MEDIUM artifact action did not follow its threshold: %#v", actions)
+	}
+
+	report.Findings = nil
+	if actions := inlineFindingPreviewActions(report, root, "medium", terminalRenderer{}); actions.decision != nil || actions.all != nil || actions.allCount != 0 {
+		t.Fatalf("empty report offered inspection actions: %#v", actions)
+	}
+}
+
+func TestPromptFindingPreviewIsBoundedAndHandsOffToStoredReport(t *testing.T) {
+	report := &Report{ReportID: "20260830T141707Z-aaaaaaaaaaaa-bbbbbbbb", Findings: []brief.Finding{}}
+	for index := 0; index < findingPreviewMaxFiles+2; index++ {
+		report.Findings = append(report.Findings, brief.Finding{Source: "deterministic", Severity: "info", Category: "other", File: "metadata", Evidence: fmt.Sprintf("evidence-%02d", index), Rationale: fmt.Sprintf("finding-%02d", index), RuleID: fmt.Sprintf("rule-%02d", index)})
+	}
+	rendered := renderAllFindingPreview(report, "", terminalRenderer{}, findingPreviewMaxFiles)
+	if !strings.Contains(rendered, "… 2 more findings · prolewatch inspect "+report.ReportID) || strings.Contains(rendered, "finding-12") || strings.Contains(rendered, "finding-13") {
+		t.Fatalf("bounded prompt inspection did not hand off omitted findings:\n%s", rendered)
 	}
 }

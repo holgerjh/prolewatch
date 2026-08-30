@@ -197,7 +197,7 @@ func (s *AuditService) ScanDirectoryWithContext(ctx context.Context, phase, root
 	if phase == "post" {
 		carried = s.carriedDecision(root, packageBase, inventory, currentManifest)
 	}
-	report, status, err := s.evaluate(ctx, packageBase, phase, inventory, carried)
+	report, status, err := s.evaluate(ctx, packageBase, phase, inventory, carried, inventory.Root)
 	if err != nil {
 		return nil, status, err
 	}
@@ -290,10 +290,10 @@ func (s *AuditService) ScanArtifacts(ctx context.Context, packages []string, pac
 	if err != nil {
 		return nil, ExitInspectionFailure, err
 	}
-	return s.evaluate(ctx, packageBase, "artifact", inventory, nil)
+	return s.evaluate(ctx, packageBase, "artifact", inventory, nil, "")
 }
 
-func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, inv *brief.Inventory, carried *CarriedDecision) (*Report, int, error) {
+func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, inv *brief.Inventory, carried *CarriedDecision, reviewRoot string) (*Report, int, error) {
 	// Evaluation combines deterministic evidence, exact earlier-phase findings
 	// already decided in this live transaction, a current one-time token if
 	// present, and then AI review when eligible. Root effects do not consume this
@@ -431,7 +431,7 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 	// probe is unavailable, so nobody looked inside the archives there is now
 	// nothing to approve on.
 	approvalEligible := !allowed && inv.ManifestHash != "" && !deterministic.StructuralBlock && s.CoverageError == "" && !verdictsHavePromptInjection(verdicts)
-	report := &Report{SchemaVersion: ReportSchemaVersion, ReportID: reportID, CreatedAt: UTCNow(), Transaction: transaction, PackageBase: packageBase, Phase: phase, Decision: decision, Disposition: disposition, Summary: policySummary(s.Config.Review.Mode, s.Config.Review.MinimumConfidence, s.Config.Review.ManualReviewMinimumSeverity, inv, verdicts, reviewError, overridden, carriedIDs), ContentHash: inv.ManifestHash, PolicyFingerprint: s.PolicyFingerprint, ScannerVersion: ScannerVersion, RulesVersion: RulesVersion, ApplicationVersion: ApplicationVersion, Reviewer: ReviewerReport{Mode: s.Config.Review.Mode, MinimumConfidence: aiMinimumConfidence(s.Config), Provider: metadata.Provider, Transport: metadata.Transport, RuntimeVersion: metadata.RuntimeVersion, Model: metadata.Model, Effort: metadata.Effort, AdapterPolicy: metadata.AdapterPolicy, Error: reviewError, Trigger: reviewTrigger, Skipped: reviewSkipped, Verdicts: verdicts}, Coverage: inv.Coverage, Exclusions: inv.Exclusions, Manifest: manifest, Findings: findings, Overridden: overridden, ApprovalEligible: approvalEligible, NetworkEligible: allowed && phase == "post" && inv.ManifestHash != "", CarriedDecision: carried, ArchiveProbe: s.ArchiveProbe, YayContext: inv.YayContext, ManifestDiff: inv.ManifestDiff, Sources: inv.Sources, SourceVerification: inv.Verification}
+	report := &Report{SchemaVersion: ReportSchemaVersion, ReportID: reportID, CreatedAt: UTCNow(), Transaction: transaction, PackageBase: packageBase, Phase: phase, Decision: decision, Disposition: disposition, Summary: policySummary(s.Config.Review.Mode, s.Config.Review.MinimumConfidence, s.Config.Review.ManualReviewMinimumSeverity, inv, verdicts, reviewError, overridden, carriedIDs), ContentHash: inv.ManifestHash, PolicyFingerprint: s.PolicyFingerprint, ScannerVersion: ScannerVersion, RulesVersion: RulesVersion, ApplicationVersion: ApplicationVersion, Reviewer: ReviewerReport{Mode: s.Config.Review.Mode, MinimumConfidence: aiMinimumConfidence(s.Config), Provider: metadata.Provider, Transport: metadata.Transport, RuntimeVersion: metadata.RuntimeVersion, Model: metadata.Model, Effort: metadata.Effort, AdapterPolicy: metadata.AdapterPolicy, Error: reviewError, Trigger: reviewTrigger, Skipped: reviewSkipped, Verdicts: verdicts}, Coverage: inv.Coverage, Exclusions: inv.Exclusions, Manifest: manifest, ReviewRoot: reviewRoot, Findings: findings, Overridden: overridden, ApprovalEligible: approvalEligible, NetworkEligible: allowed && phase == "post" && inv.ManifestHash != "", CarriedDecision: carried, ArchiveProbe: s.ArchiveProbe, YayContext: inv.YayContext, ManifestDiff: inv.ManifestDiff, Sources: inv.Sources, SourceVerification: inv.Verification}
 	if err := s.Reports.Save(report); err != nil {
 		return nil, ExitStateFailure, err
 	}

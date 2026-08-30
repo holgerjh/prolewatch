@@ -138,7 +138,7 @@ func (engine RuleEngine) scanPreparedFindings(path, text, behaviorText string, l
 		if current.id == "plain-http-source" && !mandatoryControlPath(path) {
 			continue
 		}
-		if (current.id == "dynamic-execution" || current.id == "unexpected-network-client") && !mandatoryControlPath(path) {
+		if (current.id == "dynamic-execution" || current.id == "unexpected-network-client" || current.id == "language-build-hook") && !mandatoryControlPath(path) {
 			continue
 		}
 		line, previousOffset := lineOffset+1, 0
@@ -327,6 +327,14 @@ func representativeFindings(findings []Finding) []Finding {
 }
 
 func unicodeObfuscationRelevant(name string) bool {
+	// Debug packages install inert source copies below /usr/src/debug. They are
+	// useful to a debugger but are not evaluated during installation or normal
+	// package operation. Treating ordinary source typography there as executable
+	// concealment creates a high-severity feedback loop: each false finding also
+	// selects that member for AI review.
+	if strings.Contains(strings.ToLower(name), "!/usr/src/debug/") {
+		return false
+	}
 	base := strings.ToLower(path.Base(name))
 	if base == "copying" || base == "notice" || strings.HasPrefix(base, "license") {
 		return false
@@ -354,20 +362,17 @@ func unicodeFindings(path, text string, lineOffset, limit int) []Finding {
 			break
 		}
 		lineNumber := lineOffset + index + 1
-		var controls, confusing []rune
-		hasASCIIAlpha := false
+		var controls []rune
 		for byteOffset, r := range line {
-			if r <= 127 && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
-				hasASCIIAlpha = true
-			}
 			leadingBOM := r == '\uFEFF' && lineNumber == 1 && byteOffset == 0
-			if (unicode.IsControl(r) || unicode.In(r, unicode.Cf)) && r != '\t' && r != '\r' && !leadingBOM {
+			// Form feed is source whitespace/page separation in the languages
+			// Prolewatch encounters. Like tab and carriage return, it does not by
+			// itself conceal executable behavior.
+			if (unicode.IsControl(r) || unicode.In(r, unicode.Cf)) && r != '\t' && r != '\r' && r != '\f' && !leadingBOM {
 				controls = append(controls, r)
 			}
-			if confusables[r] {
-				confusing = append(confusing, r)
-			}
 		}
+		confusing := mixedIdentifierConfusables(line)
 		if len(controls) > 0 {
 			pieces := make([]string, 0, min(8, len(controls)))
 			for _, r := range controls[:min(8, len(controls))] {
@@ -388,7 +393,7 @@ func unicodeFindings(path, text string, lineOffset, limit int) []Finding {
 		if len(result) >= limit {
 			break
 		}
-		if hasASCIIAlpha && len(confusing) > 0 {
+		if len(confusing) > 0 {
 			pieces := make([]string, 0, min(8, len(confusing)))
 			for _, r := range confusing[:min(8, len(confusing))] {
 				pieces = append(pieces, fmt.Sprintf("%c=U+%04X", r, r))
@@ -397,5 +402,36 @@ func unicodeFindings(path, text string, lineOffset, limit int) []Finding {
 			result = append(result, Finding{Source: "deterministic", Severity: "high", Category: "obfuscation", File: path, Line: &ln, Evidence: "mixed-script confusables: " + strings.Join(pieces, ", "), Rationale: "mixed Latin and confusable Unicode characters can conceal identifiers", RuleID: "unicode-confusable"})
 		}
 	}
+	return result
+}
+
+// mixedIdentifierConfusables returns confusable runes only when they share one
+// identifier-like token with an ASCII letter. Merely placing ordinary Latin
+// source text and a standalone Cyrillic/Greek codepoint on the same line is not
+// mixed-script identifier concealment (lookup tables routinely do exactly
+// that).
+func mixedIdentifierConfusables(line string) []rune {
+	var result, tokenConfusables []rune
+	hasASCIIAlpha := false
+	flush := func() {
+		if hasASCIIAlpha && len(tokenConfusables) > 0 {
+			result = append(result, tokenConfusables...)
+		}
+		tokenConfusables = tokenConfusables[:0]
+		hasASCIIAlpha = false
+	}
+	for _, r := range line {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || r == '_' {
+			if r <= unicode.MaxASCII && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				hasASCIIAlpha = true
+			}
+			if confusables[r] {
+				tokenConfusables = append(tokenConfusables, r)
+			}
+			continue
+		}
+		flush()
+	}
+	flush()
 	return result
 }

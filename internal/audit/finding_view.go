@@ -22,7 +22,7 @@ const (
 
 type findingPreviewTarget struct {
 	finding brief.Finding
-	record  brief.FileRecord
+	record  *brief.FileRecord
 	carried bool
 }
 
@@ -40,8 +40,8 @@ func findingPreviewTargets(report *Report, root, minimumSeverity string) []findi
 			records[record.Path] = record
 		}
 	}
-	pending := make([]findingPreviewTarget, 0, min(len(report.Findings), findingPreviewMaxFiles))
-	carriedTargets := make([]findingPreviewTarget, 0, min(len(report.Findings), findingPreviewMaxFiles))
+	pending := make([]findingPreviewTarget, 0, len(report.Findings))
+	carriedTargets := make([]findingPreviewTarget, 0, len(report.Findings))
 	carriedIDs := carriedFindingIDSet(report.CarriedDecision)
 	seen := map[string]bool{}
 	for _, finding := range report.Findings {
@@ -54,17 +54,69 @@ func findingPreviewTargets(report *Report, root, minimumSeverity string) []findi
 			continue
 		}
 		seen[key] = true
-		target := findingPreviewTarget{finding: finding, record: record, carried: carriedIDs[key]}
+		recordCopy := record
+		target := findingPreviewTarget{finding: finding, record: &recordCopy, carried: carriedIDs[key]}
 		if target.carried {
-			if len(carriedTargets) < findingPreviewMaxFiles {
-				carriedTargets = append(carriedTargets, target)
-			}
-		} else if len(pending) < findingPreviewMaxFiles {
+			carriedTargets = append(carriedTargets, target)
+		} else {
 			pending = append(pending, target)
 		}
 	}
-	targets := append(pending, carriedTargets...)
-	return targets[:min(len(targets), findingPreviewMaxFiles)]
+	return append(pending, carriedTargets...)
+}
+
+// allFindingPreviewTargets includes every stored finding. A manifest-bound
+// local text record is optional: line-less and archive findings still have
+// useful metadata and persisted AI guidance even though no source excerpt can
+// safely be opened for them.
+func allFindingPreviewTargets(report *Report) []findingPreviewTarget {
+	if report == nil {
+		return nil
+	}
+	records := make(map[string]brief.FileRecord, len(report.Manifest))
+	for _, value := range report.Manifest {
+		record, err := brief.ValidateManifestRecord(value)
+		if err == nil && record.Kind == "file" && record.Text {
+			records[record.Path] = record
+		}
+	}
+	carriedIDs := carriedFindingIDSet(report.CarriedDecision)
+	pending := make([]findingPreviewTarget, 0, len(report.Findings))
+	carriedTargets := make([]findingPreviewTarget, 0, len(report.Findings))
+	for _, finding := range report.Findings {
+		target := findingPreviewTarget{finding: finding, carried: carriedIDs[findingGuidanceID(finding)]}
+		if finding.Line != nil && *finding.Line > 0 {
+			if record, ok := records[finding.File]; ok {
+				recordCopy := record
+				target.record = &recordCopy
+			}
+		}
+		if target.carried {
+			carriedTargets = append(carriedTargets, target)
+		} else {
+			pending = append(pending, target)
+		}
+	}
+	return append(pending, carriedTargets...)
+}
+
+// metadataFindingPreviewTargets filters the metadata-capable all-findings view
+// by severity. The artifact gate uses it for [i]: archive members cannot be
+// reopened beneath a checkout root, but their stored path, evidence and
+// guidance remain inspectable without pretending an excerpt is available.
+func metadataFindingPreviewTargets(report *Report, minimumSeverity string) []findingPreviewTarget {
+	all := allFindingPreviewTargets(report)
+	filtered := make([]findingPreviewTarget, 0, len(all))
+	for _, target := range all {
+		if severityAtLeast(target.finding.Severity, minimumSeverity) {
+			// This view is deliberately metadata-only. In particular, never let
+			// an archive member whose display path happens to match a checkout
+			// record cross into the local-file excerpt path.
+			target.record = nil
+			filtered = append(filtered, target)
+		}
+	}
+	return filtered
 }
 
 // renderFindingPreview shows bounded source context and clearly separated AI
@@ -72,9 +124,29 @@ func findingPreviewTargets(report *Report, root, minimumSeverity string) []findi
 // byte comes from a descriptor opened beneath the scanned root and is compared
 // with the report manifest before it is rendered through terminalInline.
 func renderFindingPreview(report *Report, root, minimumSeverity string, renderer terminalRenderer) string {
-	targets := findingPreviewTargets(report, root, minimumSeverity)
+	return renderFindingPreviewTargets(report, root, findingPreviewTargets(report, root, minimumSeverity), renderer, findingPreviewMaxFiles, "decision findings")
+}
+
+func renderMetadataFindingPreview(report *Report, minimumSeverity string, renderer terminalRenderer, limit int) string {
+	return renderFindingPreviewTargets(report, "", metadataFindingPreviewTargets(report, minimumSeverity), renderer, limit, "decision findings")
+}
+
+// renderAllFindingPreview is used by the explicit inspect command and the
+// optional [a] action on prompts that already exist. A zero limit is unbounded
+// because the command is an explicit request; prompt actions pass the bounded
+// findingPreviewMaxFiles value and hand omitted entries off to that command.
+func renderAllFindingPreview(report *Report, root string, renderer terminalRenderer, limit int) string {
+	return renderFindingPreviewTargets(report, root, allFindingPreviewTargets(report), renderer, limit, "all findings")
+}
+
+func renderFindingPreviewTargets(report *Report, root string, targets []findingPreviewTarget, renderer terminalRenderer, limit int, scope string) string {
 	if len(targets) == 0 {
 		return ""
+	}
+	omitted := 0
+	if limit > 0 && len(targets) > limit {
+		omitted = len(targets) - limit
+		targets = targets[:limit]
 	}
 	type cachedFile struct {
 		raw       []byte
@@ -85,6 +157,7 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 	type previewSection struct {
 		heading   string
 		metadata  string
+		evidence  string
 		localPath string
 		context   []string
 		advisory  []string
@@ -103,30 +176,50 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 		if target.carried {
 			section.heading = strings.ToUpper(target.finding.Severity) + " (" + terminalInline(source, 32) + " · approved at recipe gate) · " + terminalInline(target.finding.Rationale, 1000)
 		}
-		cached, ok := cache[target.record.PathB64]
-		if !ok {
-			cached.raw, cached.localPath, cached.err = readManifestBoundFindingFile(root, target.record)
-			cache[target.record.PathB64] = cached
-		}
-		location := terminalInline(target.finding.File, 4096) + fmt.Sprintf(":%d", *target.finding.Line)
-		if cached.err != nil {
-			section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · unavailable: file no longer matches this report"
+		location := terminalInline(target.finding.File, 4096)
+		if target.finding.Line == nil {
+			section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · rule " + terminalInline(target.finding.RuleID, 200) + " · no source line recorded"
+			if evidence := terminalInline(target.finding.Evidence, 1000); evidence != "" {
+				section.evidence = "Evidence · " + evidence
+			}
 		} else {
-			context, err := findingContextLines(cached.raw, *target.finding.Line, findingPreviewRadius)
-			if err != nil {
-				section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · unavailable: recorded line is outside the bound file"
-			} else {
-				section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · SHA-256 verified"
-				if target.carried {
-					section.metadata += " · exact bytes unchanged"
+			location += fmt.Sprintf(":%d", *target.finding.Line)
+			switch {
+			case target.record == nil:
+				section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · source context unavailable · no manifest-bound local text file"
+			case root == "":
+				section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · source context unavailable · checkout changed or removed"
+			default:
+				cached, ok := cache[target.record.PathB64]
+				if !ok {
+					cached.raw, cached.localPath, cached.err = readManifestBoundFindingFile(root, *target.record)
+					cache[target.record.PathB64] = cached
 				}
-				section.localPath = "Local file (untrusted) · " + terminalInline(cached.localPath, 4096) + fmt.Sprintf(":%d", *target.finding.Line)
-				for _, current := range context {
-					marker := " "
-					if current.Line == *target.finding.Line {
-						marker = ">"
+				if cached.err != nil {
+					section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · source context unavailable · checkout changed, removed, or no longer matches this report"
+				} else {
+					context, err := findingContextLines(cached.raw, *target.finding.Line, findingPreviewRadius)
+					if err != nil {
+						section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · source context unavailable · recorded line is outside the bound file"
+					} else {
+						section.metadata = location + " · " + terminalInline(target.finding.Category, 100) + " · SHA-256 verified"
+						if target.carried {
+							section.metadata += " · exact bytes unchanged"
+						}
+						section.localPath = "Local file (untrusted) · " + terminalInline(cached.localPath, 4096) + fmt.Sprintf(":%d", *target.finding.Line)
+						for _, current := range context {
+							marker := " "
+							if current.Line == *target.finding.Line {
+								marker = ">"
+							}
+							section.context = append(section.context, fmt.Sprintf("%s %6d │ %s", marker, current.Line, current.Text))
+						}
 					}
-					section.context = append(section.context, fmt.Sprintf("%s %6d │ %s", marker, current.Line, current.Text))
+				}
+			}
+			if len(section.context) == 0 {
+				if evidence := terminalInline(target.finding.Evidence, 1000); evidence != "" {
+					section.evidence = "Evidence · " + evidence
 				}
 			}
 		}
@@ -137,7 +230,7 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 	}
 
 	if !renderer.enabled() {
-		plain := []string{"Prolewatch: read-only inspection of decision findings"}
+		plain := []string{"Prolewatch: read-only inspection of " + scope}
 		carriedHeadingShown := false
 		for _, section := range sections {
 			if section.carried && !carriedHeadingShown {
@@ -145,6 +238,9 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 				carriedHeadingShown = true
 			}
 			plain = append(plain, section.heading, section.metadata)
+			if section.evidence != "" {
+				plain = append(plain, section.evidence)
+			}
 			if section.localPath != "" {
 				plain = append(plain, section.localPath)
 			}
@@ -153,6 +249,9 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 			if len(section.advisory) > 0 {
 				plain = append(plain, "")
 			}
+		}
+		if omitted > 0 {
+			plain = append(plain, omittedFindingPreviewLine(report, omitted))
 		}
 		plain = append(plain, "Opening a local file in an external tool leaves this verified read-only view.")
 		return strings.Join(plain, "\n")
@@ -171,6 +270,9 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 		}
 		framed = append(framed, renderer.paint("blue", renderer.fork())+" "+renderer.paint(headingRole, section.heading))
 		framed = append(framed, renderer.paint("blue", renderer.pipe())+"  "+renderer.paint("muted", section.metadata))
+		if section.evidence != "" {
+			framed = append(framed, renderer.paint("blue", renderer.pipe())+"  "+renderer.paint("muted", section.evidence))
+		}
 		if section.localPath != "" {
 			framed = append(framed, renderer.paint("blue", renderer.pipe())+"  "+renderer.paint("muted", section.localPath))
 		}
@@ -186,9 +288,24 @@ func renderFindingPreview(report *Report, root, minimumSeverity string, renderer
 			framed = append(framed, renderer.paint("blue", renderer.pipe()))
 		}
 	}
+	if omitted > 0 {
+		framed = append(framed, renderer.paint("blue", renderer.pipe())+"  "+renderer.paint("muted", omittedFindingPreviewLine(report, omitted)))
+	}
 	framed = append(framed, renderer.paint("blue", renderer.pipe())+" "+renderer.paint("muted", "Opening a local file in an external tool leaves this verified read-only view."))
 	framed = append(framed, renderer.paint("blue", renderer.anchor())+" "+renderer.paint("bold", "PROLEWATCH")+renderer.paint("muted", renderer.divider()+"INSPECTION ENDED"))
 	return strings.Join(framed, "\n")
+}
+
+func omittedFindingPreviewLine(report *Report, omitted int) string {
+	id := "--latest"
+	if report != nil && report.ReportID != "" {
+		id = terminalInline(report.ReportID, 4096)
+	}
+	label := "findings"
+	if omitted == 1 {
+		label = "finding"
+	}
+	return fmt.Sprintf("… %d more %s · prolewatch inspect %s", omitted, label, id)
 }
 
 func severityRoleFromText(heading string) string {

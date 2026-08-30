@@ -87,9 +87,14 @@ a packaging-quality feature `pkgctl build` and `makechrootpkg` already provide.
 Its security benefit is information minimisation, and the cheap half of that is
 taken below. The residual is that a build can tell roughly what is installed
 from `/usr` — a fingerprint rather than a capability, bounded by brokered
-egress and by the checkout being the attacker's own material. `/var/lib/pacman`
-is not bound, so the package database is not readable and `pacman -Q` fails
-inside the sandbox.
+egress and by the checkout being the attacker's own material. The host's
+`/etc/pacman.conf`, mirrorlist and `/var/lib/pacman` are not bound. A contained
+build instead sees a minimal configuration with no repositories and an empty
+tmpfs package database. `pacman -Q` therefore returns no packages (and a
+non-zero status) without printing a misleading missing-configuration error.
+Consequently, Prolewatch-built packages deliberately contain no `installed =`
+inventory in `.BUILDINFO`; avoiding that detailed host fingerprint takes
+precedence over recording the usual reproducibility metadata.
 
 `/usr/lib/modules` and `/usr/src` are masked with empty tmpfs. Measured: without
 that the build reads the exact running kernel version, which is targeting
@@ -869,8 +874,9 @@ to state. It explains and never decides: a declared host still has to be
 approved, and the resulting `host:port` grant lasts only for the current
 makepkg phase.
 
-Both decision kinds ask the same way — `[y/N]`, defaulting to no — and the
-severity lives in the briefing above rather than in the shape of the question.
+Both package-review decision kinds ask the same way — `[y] Continue · [N]
+Abort`, with Enter defaulting to abort — and the severity lives in the briefing
+above rather than in the shape of the question.
 There is deliberately no typed-word confirmation. Recognised findings describe
 rather than block, so this prompt fires on ordinary packages, and a ceremony
 repeated on ordinary packages becomes muscle memory. Typing a word by reflex is

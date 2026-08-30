@@ -218,13 +218,28 @@ func confirmInlineDecision(mode string, report *Report, cause error, reviewRoot,
 		return false
 	}
 	defer tty.Close()
-	var preview func() string
-	if len(findingPreviewTargets(report, reviewRoot, minimumSeverity)) > 0 {
-		preview = func() string {
-			return renderFindingPreview(report, reviewRoot, minimumSeverity, rendererForWriter(tty))
+	previews := inlineFindingPreviewActions(report, reviewRoot, minimumSeverity, rendererForWriter(tty))
+	return confirmInlineDecisionInput(mode, report, cause, tty, tty, previews, minimumSeverity)
+}
+
+func inlineFindingPreviewActions(report *Report, reviewRoot, minimumSeverity string, renderer terminalRenderer) inlineFindingPreviews {
+	previews := inlineFindingPreviews{}
+	if report != nil && report.Phase == "artifact" && len(metadataFindingPreviewTargets(report, minimumSeverity)) > 0 {
+		previews.decision = func() string {
+			return renderMetadataFindingPreview(report, minimumSeverity, renderer, findingPreviewMaxFiles)
+		}
+	} else if len(findingPreviewTargets(report, reviewRoot, minimumSeverity)) > 0 {
+		previews.decision = func() string {
+			return renderFindingPreview(report, reviewRoot, minimumSeverity, renderer)
 		}
 	}
-	return confirmInlineDecisionInput(mode, report, cause, tty, tty, preview, minimumSeverity)
+	if targets := allFindingPreviewTargets(report); len(targets) > 0 {
+		previews.allCount = len(targets)
+		previews.all = func() string {
+			return renderAllFindingPreview(report, reviewRoot, renderer, findingPreviewMaxFiles)
+		}
+	}
+	return previews
 }
 
 // interactiveDecisionAvailable reports whether confirmInlineDecision could ask.
@@ -257,7 +272,13 @@ var openControllingTerminal = func() (io.ReadWriteCloser, error) {
 // The standalone prolewatch approve command is deliberate and infrequent, so
 // it asks for the package name and hash prefix to bind the decision to visibly
 // different content.
-func confirmInlineDecisionInput(mode string, report *Report, cause error, input io.Reader, output io.Writer, preview func() string, minimumSeverity string) bool {
+type inlineFindingPreviews struct {
+	decision func() string
+	all      func() string
+	allCount int
+}
+
+func confirmInlineDecisionInput(mode string, report *Report, cause error, input io.Reader, output io.Writer, previews inlineFindingPreviews, minimumSeverity string) bool {
 	reason := ""
 	switch mode {
 	case inlineConfidence:
@@ -283,13 +304,16 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 			// package-authored fake instruction cannot queue the next decision.
 			terminal.Discard()
 		}
-		writeInlineDecisionPrompt(renderer, output, name, reason, later, preview != nil, minimumSeverity)
+		writeInlineDecisionPrompt(renderer, output, name, reason, later, previews.decision != nil, previews.allCount, minimumSeverity)
 
 		choice := byte('n')
 		if terminalInput {
 			choices := "yn"
-			if preview != nil {
-				choices = "yni"
+			if previews.decision != nil {
+				choices += "i"
+			}
+			if previews.all != nil {
+				choices += "a"
 			}
 			selected, err := terminal.ReadChoice(0, choices, 'n')
 			if err != nil {
@@ -304,15 +328,24 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 				choice = 'y'
 			case "i", "inspect":
 				choice = 'i'
+			case "a", "all":
+				choice = 'a'
 			}
 		}
 		switch choice {
 		case 'y':
 			return true
 		case 'i':
-			if preview != nil {
+			if previews.decision != nil {
 				fmt.Fprintln(output)
-				fmt.Fprintln(output, preview())
+				fmt.Fprintln(output, previews.decision())
+				continue
+			}
+			return false
+		case 'a':
+			if previews.all != nil {
+				fmt.Fprintln(output)
+				fmt.Fprintln(output, previews.all())
 				continue
 			}
 			return false
@@ -322,12 +355,22 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 	}
 }
 
-func writeInlineDecisionPrompt(renderer terminalRenderer, output io.Writer, name, reason, later string, preview bool, minimumSeverity string) {
-	question := "Continue with " + name + "? [y/N] "
-	inspect := "Inspect " + decisionSeverityLabel(minimumSeverity) + " findings"
+func writeInlineDecisionPrompt(renderer terminalRenderer, output io.Writer, name, reason, later string, preview bool, allCount int, minimumSeverity string) {
+	actions := []string{}
 	if preview {
-		question = "[i] " + inspect + " · " + question
+		actions = append(actions, "[i] Inspect "+decisionSeverityLabel(minimumSeverity)+" findings")
 	}
+	if allCount > 0 {
+		label := "findings"
+		if allCount == 1 {
+			label = "finding"
+		}
+		actions = append(actions, fmt.Sprintf("[a] Inspect all %d %s", allCount, label))
+	}
+	// Spell out the decision actions just like the inspection actions. The
+	// uppercase N communicates that Enter still takes the safe default.
+	actions = append(actions, "[y] Continue", "[N] Abort")
+	question := strings.Join(actions, " · ") + " "
 	if !renderer.enabled() {
 		fmt.Fprintf(output, "\nProlewatch · MANUAL REVIEW REQUIRED · %s\n", name)
 		fmt.Fprintln(output, reason)

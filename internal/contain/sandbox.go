@@ -29,6 +29,12 @@ type Spec struct {
 	// applied after ExtraBinds, so a read-only entry inside a writable one wins.
 	ExtraROBinds [][2]string
 
+	// EmptyPacmanDatabase exposes an existing but empty package database. The
+	// caller must separately bind a synthetic /etc/pacman.conf. This lets
+	// makepkg's .BUILDINFO query return no host packages without either reading
+	// the host database or printing a missing-configuration error.
+	EmptyPacmanDatabase bool
+
 	// Env is the complete environment. Nothing is inherited: HOME, PATH, LANG
 	// and TERM are supplied below, and anything else must be named here.
 	Env map[string]string
@@ -45,7 +51,8 @@ type Spec struct {
 // makepkg needs its own configuration and the user/group databases; toolchains
 // need the trust store; anything networked needs resolution. Deliberately
 // absent: machine-id, hostname, the host's pacman configuration and mirrorlist,
-// and every drop-in directory that describes this particular machine.
+// and every drop-in directory that describes this particular machine. The
+// makepkg caller explicitly binds a private no-repository pacman.conf instead.
 var etcAllowlist = []string{
 	"/etc/makepkg.conf",
 	"/etc/makepkg.conf.d",
@@ -120,6 +127,17 @@ func (s Spec) BwrapArgs(usernsFD int) []string {
 		"--tmpfs", "/var/tmp",
 		"--tmpfs", homeTarget,
 		"--dir", "/etc",
+	}
+	if s.EmptyPacmanDatabase {
+		// The database exists so pacman's read-only query is quiet, but contains no
+		// local entries. These paths are new mounts inside the sandbox; none of the
+		// host's /var/lib/pacman crosses the boundary.
+		args = append(args,
+			"--tmpfs", "/var/lib/pacman",
+			"--dir", "/var/lib/pacman/local",
+			"--dir", "/tmp/pacman-cache",
+			"--dir", "/tmp/pacman-gnupg",
+		)
 	}
 	// Mask the parts of /usr that describe this particular machine rather than
 	// providing a toolchain.

@@ -33,6 +33,8 @@ func RunCLI(ctx context.Context, args []string) int {
 		return runScan(ctx, cfg, args[1:])
 	case "report":
 		return runReport(args[1:])
+	case "inspect":
+		return runInspect(args[1:])
 	case "approve":
 		return runApproval(args[0], args[1:])
 	case "doctor":
@@ -309,6 +311,8 @@ func runScan(ctx context.Context, cfg Config, args []string) int {
 		// rerun the complete gate so policy consumes it, then remove any leftover
 		// token on success or failure.
 		if mode != "" && confirmInlineDecision(mode, report, nil, *dir, cfg.Review.ManualReviewMinimumSeverity) {
+			fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(report.PackageBase, 4096)+" / "+phaseName(report.Phase)+" against the exact snapshot"))
+			progressTimedStage(ctx, StageDecisionValidation, cfg.Limits.ScanTimeoutSeconds)
 			tokenPath, createErr := createInlineToken(mode, report, service.Approvals)
 			if createErr != nil {
 				prepareTerminalOutput(ctx)
@@ -373,6 +377,41 @@ func runReport(args []string) int {
 	fmt.Println(rendererFor(os.Stdout).report(report))
 	return ExitOK
 }
+
+func runInspect(args []string) int {
+	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	latest := flags.Bool("latest", false, "inspect latest report")
+	if err := flags.Parse(args); err != nil {
+		return ExitInvalidInvocation
+	}
+	store := NewReportStore()
+	var report *Report
+	var err error
+	if *latest {
+		if flags.NArg() != 0 {
+			return cliError(ExitInvalidInvocation, errors.New("--latest does not accept a report id"))
+		}
+		report, err = store.Latest()
+	} else {
+		if flags.NArg() != 1 {
+			return cliError(ExitInvalidInvocation, errors.New("inspect requires REPORT_ID or --latest"))
+		}
+		report, err = store.Load(flags.Arg(0))
+	}
+	if err != nil {
+		return cliError(ExitInvalidInvocation, err)
+	}
+	renderer := rendererFor(os.Stdout)
+	inspection := renderAllFindingPreview(report, report.ReviewRoot, renderer, 0)
+	if inspection == "" {
+		fmt.Println(renderer.detailLine("No findings are stored in this report."))
+		return ExitOK
+	}
+	fmt.Println(inspection)
+	return ExitOK
+}
+
 func runApproval(command string, args []string) int {
 	if len(args) != 1 {
 		return cliError(ExitInvalidInvocation, fmt.Errorf("%s requires REPORT_ID", command))
@@ -487,5 +526,5 @@ func rendererForWriter(out io.Writer) terminalRenderer {
 	return newTerminalRenderer(cfg, out)
 }
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: prolewatch <setup|scan|report|approve|doctor|config-check|install-hook|uninstall-hook|security-scenarios|version> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: prolewatch <setup|scan|report|inspect|approve|doctor|config-check|install-hook|uninstall-hook|security-scenarios|version> [options]")
 }

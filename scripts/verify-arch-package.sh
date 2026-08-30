@@ -17,13 +17,13 @@ package=${1:-}
 basename=${package##*/}
 [[ ${basename} == prolewatch-dev-*.pkg.tar.zst ]] || { echo 'Unexpected development package name.' >&2; exit 1; }
 
-policy=$(pacman-conf LocalFileSigLevel 2>/dev/null || true)
-[[ ${policy} == *Required* && ${policy} == *TrustedOnly* && ${policy} != *Optional* && ${policy} != *TrustAll* && ${policy} != *Never* ]] || {
-  printf 'Pacman does not require trusted signatures for local files: %s\n' "${policy:-unknown}" >&2
-  printf 'Set LocalFileSigLevel = Required TrustedOnly in /etc/pacman.conf.\n' >&2
+data_home=${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}
+key_home=${PROLEWATCH_DEV_GNUPGHOME:-${data_home}/prolewatch/dev-signing-gnupg}
+[[ ${key_home} == /* && -d ${key_home} && ! -L ${key_home} ]] || {
+  printf 'Development signing key directory is missing or unsafe: %s\n' "${key_home}" >&2
   exit 1
 }
-pacman-key --verify "${package}.sig" "${package}"
+gpg --batch --homedir "${key_home}" --verify "${package}.sig" "${package}"
 
 metadata=$(mktemp -d /tmp/prolewatch-package-verify.XXXXXX)
 trap 'rm -rf -- "${metadata}"' EXIT
@@ -103,7 +103,14 @@ etc/prolewatch/config.json
 usr/share/doc/prolewatch/docs/ai-review.md
 REQUIRED
 
-printf 'Signature, pacman policy, and architecture are valid.\n'
+policy=$(pacman-conf LocalFileSigLevel 2>/dev/null || true)
+if [[ ${policy} == *Required* && ${policy} == *TrustedOnly* &&
+  ${policy} != *Optional* && ${policy} != *TrustAll* && ${policy} != *Never* ]]; then
+  printf '%s\n' 'WARNING: LocalFileSigLevel = Required TrustedOnly rejects unsigned local packages, including normal makepkg output; AUR installs will fail until it is relaxed.' >&2
+else
+  printf 'WARNING: pacman will not require a trusted local-package signature under LocalFileSigLevel=%s; this package was verified directly instead.\n' "${policy:-unknown}" >&2
+fi
+printf 'Signature and architecture are valid.\n'
 printf 'Payload carries only the members the PKGBUILD declares: no scriptlet, unit, hook, loader or service directory, and no setuid bit.\n'
 printf 'Payload carries every file the installed commands need and the AI setup guide linked from its README.\n'
 printf 'Install through the authenticated package-manager boundary:\n'

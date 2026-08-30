@@ -385,3 +385,105 @@ func (t *PromptTerminal) ReadChoice(timeout time.Duration, choices string, defau
 		}
 	}
 }
+
+// ReadChoiceOrLine combines immediate single-key actions with an
+// Enter-terminated selection made from lineChars. It is for menus where the
+// common actions should feel like ReadChoice, but a numeric list such as
+// "1,3" must remain expressible.
+//
+// immediate choices act only before any line input has been collected. Enter
+// selects defaultChoice when the line is empty. The timeout is an idle budget:
+// each accepted line character starts it again, so a person entering a longer
+// selection is not timed out mid-answer.
+func (t *PromptTerminal) ReadChoiceOrLine(timeout time.Duration, immediate string, defaultChoice byte, lineChars string, maxBytes int) (string, error) {
+	if t == nil || t.File == nil || maxBytes < 1 {
+		return "", os.ErrInvalid
+	}
+	if defaultChoice < 'a' || defaultChoice > 'z' || !strings.ContainsRune(immediate, rune(defaultChoice)) {
+		return "", os.ErrInvalid
+	}
+	for _, choice := range immediate {
+		if choice < 'a' || choice > 'z' {
+			return "", os.ErrInvalid
+		}
+	}
+	for _, choice := range lineChars {
+		if choice < 0x20 || choice > 0x7e || strings.ContainsRune(immediate, choice) {
+			return "", os.ErrInvalid
+		}
+	}
+
+	fd := int(t.File.Fd())
+	original, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return "", err
+	}
+	keyMode := *original
+	keyMode.Lflag &^= unix.ICANON | unix.ECHO
+	keyMode.Cc[unix.VMIN] = 1
+	keyMode.Cc[unix.VTIME] = 0
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &keyMode); err != nil {
+		return "", err
+	}
+	defer func() {
+		// Discard any suffix from pasted or habitual line input so it cannot
+		// answer yay's next prompt.
+		_ = unix.IoctlSetTermios(fd, unix.TCSETSF, original)
+	}()
+
+	answer := make([]byte, 0, 16)
+	var key [1]byte
+	for {
+		if timeout > 0 {
+			milliseconds := int((timeout + time.Millisecond - 1) / time.Millisecond)
+			ready, pollErr := unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, milliseconds)
+			if errors.Is(pollErr, unix.EINTR) {
+				continue
+			}
+			if pollErr != nil {
+				return "", pollErr
+			}
+			if ready < 1 {
+				return "", ErrYesNoPromptTimeout
+			}
+		}
+		count, readErr := t.File.Read(key[:])
+		if errors.Is(readErr, unix.EINTR) {
+			continue
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+		if count == 0 {
+			return "", io.EOF
+		}
+
+		choice := key[0]
+		normalized := choice
+		if normalized >= 'A' && normalized <= 'Z' {
+			normalized += 'a' - 'A'
+		}
+		if len(answer) == 0 && strings.IndexByte(immediate, normalized) >= 0 {
+			_, _ = t.File.Write([]byte{normalized, '\n'})
+			return string(normalized), nil
+		}
+		if choice == '\r' || choice == '\n' {
+			_, _ = t.File.WriteString("\n")
+			if len(answer) == 0 {
+				return string(defaultChoice), nil
+			}
+			return string(answer), nil
+		}
+		if choice == 0x7f || choice == '\b' {
+			if len(answer) > 0 {
+				answer = answer[:len(answer)-1]
+				_, _ = t.File.WriteString("\b \b")
+			}
+			continue
+		}
+		if strings.IndexByte(lineChars, choice) >= 0 && len(answer) < maxBytes {
+			answer = append(answer, choice)
+			_, _ = t.File.Write(key[:])
+		}
+	}
+}

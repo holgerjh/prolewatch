@@ -48,6 +48,10 @@ func TestSourceSummaryMakesTrustPolicyExplicit(t *testing.T) {
 	if !strings.Contains(got, "accepted uninspected") || !strings.Contains(got, "checksums passed") {
 		t.Fatalf("source summary hides policy: %q", got)
 	}
+	unbound := SourceSummary([]SourceProvenance{{Name: "source.tar", Kind: SourceKindArchive, URL: "https://vendor.example/source.tar", Transport: "https", Binding: "unbound", ScanDepth: 0}}, SourceVerification{})
+	if strings.Contains(unbound, "pinned to exact bytes") || !strings.Contains(unbound, "1 mutable") {
+		t.Fatalf("unbound source summary overstates its binding: %q", unbound)
+	}
 }
 
 // TestUnsupportedTransportIsReportedBeforeTheBuild covers the compatibility

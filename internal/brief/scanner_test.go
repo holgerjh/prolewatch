@@ -481,6 +481,88 @@ func TestSRCINFOComparisonDetectsLiteralChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestSRCINFOComparisonDetectsSRCINFOOnlyChecksumArray(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	inv := &Inventory{Coverage: Coverage{Complete: true}, Files: []FileRecord{
+		{Path: "PKGBUILD", SelectedText: "pkgbase=demo\npkgver=1\npkgrel=1\nsource=('source.tar')\n"},
+		{Path: ".SRCINFO", SelectedText: "pkgbase = demo\npkgver = 1\npkgrel = 1\nsource = source.tar\nsha256sums = " + digest + "\n"},
+	}}
+	(&Scanner{}).compareSRCINFO(inv)
+	finding := findingByRule(inv.Findings, "srcinfo-mismatch")
+	if finding == nil || finding.Line == nil || *finding.Line != 5 || !strings.Contains(finding.Evidence, digest) || !strings.Contains(finding.Evidence, "PKGBUILD \"<missing>\"") {
+		t.Fatalf(".SRCINFO-only checksum array was not reported precisely: %#v", inv.Findings)
+	}
+}
+
+func TestSRCINFOComparisonSkipsReverseMismatchForDynamicPKGBUILDArray(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	inv := &Inventory{Coverage: Coverage{Complete: true}, Files: []FileRecord{
+		{Path: "PKGBUILD", SelectedText: "pkgbase=demo\npkgver=1\npkgrel=1\nsource=('source.tar')\nsha256sums=(\"$(calculate_digest)\")\n"},
+		{Path: ".SRCINFO", SelectedText: "pkgbase = demo\npkgver = 1\npkgrel = 1\nsource = source.tar\nsha256sums = " + digest + "\n"},
+	}}
+	(&Scanner{}).compareSRCINFO(inv)
+	if findingByRule(inv.Findings, "srcinfo-mismatch") != nil {
+		t.Fatalf("dynamic PKGBUILD array manufactured a reverse mismatch: %#v", inv.Findings)
+	}
+}
+
+func TestChecksumMismatchEvidenceNeverCutsADigest(t *testing.T) {
+	srcValues := make([]string, 12)
+	pkgValues := make([]string, 12)
+	for index := range srcValues {
+		srcValues[index] = strings.Repeat(string(rune('a'+index%6)), 64)
+		pkgValues[index] = strings.Repeat(string(rune('4'+index%6)), 64)
+	}
+	evidence := checksumMismatchEvidence("sha256sums", srcValues, pkgValues)
+	if len(evidence) > 320 || strings.Contains(evidence, "...") || strings.Contains(evidence, "…") {
+		t.Fatalf("checksum evidence was truncated: %q", evidence)
+	}
+	for _, want := range []string{"12 of 12 checksums differ", "first at index 1", srcValues[0], pkgValues[0]} {
+		if !strings.Contains(evidence, want) {
+			t.Fatalf("checksum evidence omitted whole first mismatch %q: %q", want, evidence)
+		}
+	}
+	if strings.Contains(evidence, srcValues[1]) || strings.Contains(evidence, pkgValues[1]) {
+		t.Fatalf("checksum evidence expanded into an array instead of whole-element summary: %q", evidence)
+	}
+
+	longDigestEvidence := checksumMismatchEvidence("sha512sums_x86_64", []string{strings.Repeat("a", 128)}, []string{strings.Repeat("b", 128)})
+	if strings.Contains(longDigestEvidence, strings.Repeat("a", 32)) || strings.Contains(longDigestEvidence, strings.Repeat("b", 32)) || longDigestEvidence != "sha512sums_x86_64: 1 of 1 checksums differ; first at index 1" {
+		t.Fatalf("oversized checksum pair was partially rendered: %q", longDigestEvidence)
+	}
+	if empty := checksumMismatchEvidence("sha256sums", nil, nil); empty != "sha256sums: field presence differs; .SRCINFO absent, PKGBUILD has an empty array" {
+		t.Fatalf("empty-array presence mismatch was ambiguous: %q", empty)
+	}
+}
+
+func TestPreScanDoesNotClaimStaleSRCINFOChecksumAsSourceBinding(t *testing.T) {
+	root := t.TempDir()
+	pkgDigest := strings.Repeat("a", 64)
+	srcDigest := strings.Repeat("b", 64)
+	pkgbuild := "pkgbase=demo\npkgver=1\npkgrel=1\nsource=('https://vendor.example/source.tar')\nsha256sums=('" + pkgDigest + "')\n"
+	srcinfo := "pkgbase = demo\npkgver = 1\npkgrel = 1\nsource = https://vendor.example/source.tar\nsha256sums = " + srcDigest + "\n"
+	for name, body := range map[string]string{"PKGBUILD": pkgbuild, ".SRCINFO": srcinfo} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inv, err := NewScanner(DefaultConfig()).ScanDirectory(root, "pre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Sources) != 1 || inv.Sources[0].Binding != "unbound" || inv.Sources[0].DeclaredAlgorithm != "" || inv.Sources[0].DeclaredDigest != "" {
+		t.Fatalf("stale .SRCINFO digest remained authoritative: %#v", inv.Sources)
+	}
+	if findingByRule(inv.Findings, "srcinfo-mismatch") == nil || findingByRule(inv.Findings, "vendor-provenance-weak") == nil {
+		t.Fatalf("stale binding did not produce both findings: %#v", inv.Findings)
+	}
+	summary := SourceSummary(inv.Sources, inv.Verification)
+	if strings.Contains(summary, "pinned to exact bytes") || !strings.Contains(summary, "1 mutable") {
+		t.Fatalf("source summary still overstates the stale binding: %q", summary)
+	}
+}
+
 func TestTarSetIDIsHardBlocked(t *testing.T) {
 	var raw bytes.Buffer
 	tw := tar.NewWriter(&raw)

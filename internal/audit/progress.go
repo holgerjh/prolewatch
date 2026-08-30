@@ -23,8 +23,11 @@ const (
 	StageBubblewrapLaunch   = "bubblewrap-launch"
 	StageSandboxExecution   = "sandbox-execution"
 	StagePostDownloadRescan = "post-download-rescan"
+	StageDecisionValidation = "decision-validation"
 	StageArtifactInspection = "artifact-inspection"
 	StageArtifactBinding    = "artifact-binding"
+	StageRootSurfaceReview  = "root-surface-review"
+	StageArtifactRewrite    = "artifact-rewrite"
 	StageComplete           = "complete"
 )
 

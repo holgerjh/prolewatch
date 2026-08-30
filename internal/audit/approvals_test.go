@@ -96,7 +96,7 @@ func TestInlineDecisionsAskOnceAndDefaultToNo(t *testing.T) {
 		{inlineOverride, "yeah\n", false},
 	} {
 		var output bytes.Buffer
-		if got := confirmInlineDecisionInput(current.mode, approvalFixture(), nil, strings.NewReader(current.input), &output, nil, "high"); got != current.accept {
+		if got := confirmInlineDecisionInput(current.mode, approvalFixture(), nil, strings.NewReader(current.input), &output, inlineFindingPreviews{}, "high"); got != current.accept {
 			t.Fatalf("mode=%s input=%q accepted=%t want=%t output=%q", current.mode, current.input, got, current.accept, output.String())
 		}
 	}
@@ -241,7 +241,7 @@ func TestInlineDecisionUsesTheControllingTerminal(t *testing.T) {
 func TestDecliningAPromptStillNamesTheCommandLinePath(t *testing.T) {
 	report := approvalFixture()
 	var out bytes.Buffer
-	confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("no\n"), &out, nil, "high")
+	confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("no\n"), &out, inlineFindingPreviews{}, "high")
 	rendered := out.String()
 	if !strings.Contains(rendered, "prolewatch approve "+report.ReportID) {
 		t.Fatalf("the prompt does not say how to approve later:\n%s", rendered)
@@ -259,7 +259,7 @@ func TestInlineDecisionCanViewEvidenceWithoutAuthorizing(t *testing.T) {
 		return "trusted frame · untrusted context"
 	}
 	var out bytes.Buffer
-	if confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("i\nn\n"), &out, preview, "high") {
+	if confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("i\nn\n"), &out, inlineFindingPreviews{decision: preview}, "high") {
 		t.Fatal("viewing evidence authorized the package")
 	}
 	if views != 1 || !strings.Contains(out.String(), "[i] Inspect HIGH/CRITICAL findings") || !strings.Contains(out.String(), "untrusted context") || strings.Count(out.String(), "MANUAL REVIEW REQUIRED") != 2 {
@@ -267,12 +267,29 @@ func TestInlineDecisionCanViewEvidenceWithoutAuthorizing(t *testing.T) {
 	}
 }
 
+func TestInlineDecisionCanInspectAllFindingsWithoutAuthorizing(t *testing.T) {
+	report := approvalFixture()
+	decisionViews, allViews := 0, 0
+	previews := inlineFindingPreviews{
+		decision: func() string { decisionViews++; return "decision findings" },
+		all:      func() string { allViews++; return "all findings including metadata" },
+		allCount: 7,
+	}
+	var out bytes.Buffer
+	if confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("a\nn\n"), &out, previews, "high") {
+		t.Fatal("viewing all findings authorized the package")
+	}
+	if decisionViews != 0 || allViews != 1 || !strings.Contains(out.String(), "[a] Inspect all 7 findings") || !strings.Contains(out.String(), "all findings including metadata") || strings.Count(out.String(), "MANUAL REVIEW REQUIRED") != 2 {
+		t.Fatalf("all-findings action did not return to the decision prompt: decision=%d all=%d output=%q", decisionViews, allViews, out.String())
+	}
+}
+
 func TestManualReviewPromptUsesTheBlueProlewatchBlock(t *testing.T) {
 	var out bytes.Buffer
 	renderer := terminalRendererWithCapabilities(&out, terminalCapabilities{Interactive: true, Unicode: true, Color: terminalColorTrue})
-	writeInlineDecisionPrompt(renderer, &out, "demo", "The findings above need your decision.", "prolewatch approve report", true, "high")
+	writeInlineDecisionPrompt(renderer, &out, "demo", "The findings above need your decision.", "prolewatch approve report", true, 7, "high")
 	rendered := out.String()
-	for _, want := range []string{"PROLEWATCH", "MANUAL REVIEW REQUIRED", "The findings above need your decision.", "[i] Inspect HIGH/CRITICAL findings · Continue with demo? [y/N]", "38;2;23;147;209"} {
+	for _, want := range []string{"PROLEWATCH", "MANUAL REVIEW REQUIRED", "The findings above need your decision.", "[i] Inspect HIGH/CRITICAL findings · [a] Inspect all 7 findings · [y] Continue · [N] Abort", "38;2;23;147;209"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("manual review block omitted %q: %q", want, rendered)
 		}
@@ -281,8 +298,16 @@ func TestManualReviewPromptUsesTheBlueProlewatchBlock(t *testing.T) {
 		t.Fatalf("manual review block retained redundant approval text: %q", rendered)
 	}
 	out.Reset()
-	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", true, "medium")
+	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", true, 3, "medium")
 	if !strings.Contains(out.String(), "Inspect MEDIUM+ findings") || strings.Contains(out.String(), "HIGH/CRITICAL") {
 		t.Fatalf("manual review action did not follow configured threshold: %q", out.String())
+	}
+	out.Reset()
+	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", false, 0, "high")
+	if strings.Contains(out.String(), "[i]") || strings.Contains(out.String(), "[a]") {
+		t.Fatalf("a prompt with no previewable findings offered inspection keys: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "[y] Continue · [N] Abort") || strings.Contains(out.String(), "[y/N]") {
+		t.Fatalf("a decision-only prompt did not spell out its safe default: %q", out.String())
 	}
 }

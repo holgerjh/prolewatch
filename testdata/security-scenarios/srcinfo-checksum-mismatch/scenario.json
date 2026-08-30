@@ -16,6 +16,11 @@
         "rule_id": "srcinfo-mismatch",
         "severity": "high",
         "hard_block": false
+      },
+      {
+        "rule_id": "vendor-provenance-weak",
+        "severity": "medium",
+        "hard_block": false
       }
     ]
   },

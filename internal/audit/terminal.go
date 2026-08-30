@@ -203,6 +203,14 @@ func (r terminalRenderer) successLine(message string) string {
 	return r.paint("green", r.bullet()) + " " + message + "  " + r.stamp("READY", "green")
 }
 
+func (r terminalRenderer) runningLine(message string) string {
+	message = terminalInline(message, 4000)
+	if !r.enabled() {
+		return "Prolewatch: " + message
+	}
+	return r.paint("amber", r.bullet()) + " " + message + "  " + r.stamp("RUNNING", "amber")
+}
+
 func (r terminalRenderer) detailLine(message string) string {
 	if !r.enabled() {
 		return message
@@ -304,12 +312,23 @@ func (r terminalRenderer) guardComplete(report *Report) string {
 	}
 	packagePhase := terminalInline(report.PackageBase, 4096) + " / " + terminalInline(report.Phase, 100)
 	if !r.enabled() {
-		return "Prolewatch phase complete: " + packagePhase + "; control returned to yay"
+		return "Prolewatch phase complete: " + packagePhase + "; " + phaseHandoff(report.Phase)
 	}
 	return r.paint("blue", r.anchor()) + " " + r.paint("bold", "PROLEWATCH") +
 		r.paint("muted", r.divider()+"PHASE COMPLETE"+r.divider()) +
 		terminalInline(report.PackageBase, 4096) + r.paint("muted", " · "+phaseName(report.Phase)) +
-		r.paint("muted", r.divider()+"yay resumes")
+		r.paint("muted", r.divider()+phaseHandoff(report.Phase))
+}
+
+func phaseHandoff(phase string) string {
+	switch phase {
+	case "pre":
+		return "yay resumes · next: source acquisition"
+	case "post":
+		return "yay resumes · next: contained build"
+	default:
+		return "yay resumes"
+	}
 }
 
 // report renders a briefing that stands alone: it tells the user how to act
@@ -540,15 +559,23 @@ func (r terminalRenderer) reportWithHandoff(report *Report, promptFollows, hando
 	footerParts = append(footerParts, review)
 	footer := strings.Join(footerParts, r.divider())
 	lines = append(lines, "", r.paint("muted", footer))
-	lines = append(lines, r.paint("muted", "report "+terminalInline(report.ReportID, 4096)+r.divider()+"content "+terminalInline(content, 128)))
-	return r.fullReportBlock(lines, packagePhase, handoff)
+	identifierLine := "report " + terminalInline(report.ReportID, 4096) + r.divider() + "content " + terminalInline(content, 128)
+	if reportInspectionHint(report, promptFollows) {
+		identifierLine += r.divider() + "inspect: prolewatch inspect --latest"
+	}
+	lines = append(lines, r.paint("muted", identifierLine))
+	return r.fullReportBlock(lines, packagePhase, report.Phase, handoff)
+}
+
+func reportInspectionHint(report *Report, promptFollows bool) bool {
+	return report != nil && len(report.Findings) > 0 && !promptFollows
 }
 
 // fullReportBlock gives a complete Prolewatch briefing one continuous visual
 // owner. The outer blue rail encloses summary, sources, findings and footer;
 // severity markers inside it retain their red/amber meaning. Compact one-line
 // phase results deliberately do not get a frame.
-func (r terminalRenderer) fullReportBlock(lines []string, packagePhase string, handoff bool) string {
+func (r terminalRenderer) fullReportBlock(lines []string, packagePhase, phase string, handoff bool) string {
 	if !r.enabled() || len(lines) < 2 {
 		return strings.Join(lines, "\n")
 	}
@@ -569,7 +596,7 @@ func (r terminalRenderer) fullReportBlock(lines []string, packagePhase string, h
 	closing := r.paint("blue", r.anchor()) + " " + r.paint("bold", "PROLEWATCH") +
 		r.paint("muted", r.divider()+"PACKAGE REVIEW ENDED"+r.divider()) + packagePhase
 	if handoff {
-		closing += r.paint("muted", r.divider()+"yay resumes")
+		closing += r.paint("muted", r.divider()+phaseHandoff(phase))
 	}
 	framed = append(framed, closing)
 	return strings.Join(framed, "\n")
@@ -765,7 +792,7 @@ func (r terminalRenderer) compactReport(report *Report, handoff bool) string {
 	}
 	result += r.paint("muted", r.divider()+terminalInline(report.ReportID, 4096))
 	if handoff {
-		result += r.paint("muted", r.divider()+"yay resumes")
+		result += r.paint("muted", r.divider()+phaseHandoff(report.Phase))
 	}
 	return result
 }

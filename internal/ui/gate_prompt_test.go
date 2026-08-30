@@ -60,6 +60,9 @@ func TestGatePromptShowsTheCodeAndWhenItRuns(t *testing.T) {
 	if !strings.Contains(rendered, "[c] cancel") || !strings.Contains(rendered, "[s] strip all") {
 		t.Fatalf("the prompt omits a choice:\n%s", rendered)
 	}
+	if !strings.Contains(rendered, "k, s, and c act immediately") || !strings.Contains(rendered, "numbered selections with Enter") {
+		t.Fatalf("the prompt does not explain which choices need Enter:\n%s", rendered)
+	}
 }
 
 // A long scriptlet must not scroll the prompt off the screen: what the user

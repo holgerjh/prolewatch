@@ -801,7 +801,8 @@ func (s *Scanner) compareSRCINFO(inv *Inventory) {
 			inv.Findings = append(inv.Findings, Finding{Severity: "high", Category: "package_metadata", File: ".SRCINFO", Evidence: fmt.Sprintf("%s: %q != %q", key, other, value), Rationale: "static PKGBUILD metadata differs from .SRCINFO", RuleID: "srcinfo-mismatch"})
 		}
 	}
-	pkgChecksums := staticPKGBUILDChecksumArrays(pkg.SelectedText)
+	pkgChecksumAnalysis := analyzeStaticPKGBUILDChecksumArrays(pkg.SelectedText)
+	pkgChecksums := pkgChecksumAnalysis.Values
 	srcChecksums := map[string]srcChecksumField{}
 	for index, line := range strings.Split(src.SelectedText, "\n") {
 		match := srcChecksumFieldRE.FindStringSubmatch(line)
@@ -815,24 +816,44 @@ func (s *Scanner) compareSRCINFO(inv *Inventory) {
 		field.Values = append(field.Values, match[2])
 		srcChecksums[match[1]] = field
 	}
-	checksumKeys := make([]string, 0, len(pkgChecksums))
+	checksumKeySet := make(map[string]bool, len(pkgChecksums)+len(srcChecksums))
 	for key := range pkgChecksums {
+		checksumKeySet[key] = true
+	}
+	for key := range srcChecksums {
+		if _, resolved := pkgChecksums[key]; !resolved && pkgChecksumAnalysis.Unresolved(key) {
+			continue
+		}
+		checksumKeySet[key] = true
+	}
+	checksumKeys := make([]string, 0, len(checksumKeySet))
+	for key := range checksumKeySet {
 		checksumKeys = append(checksumKeys, key)
 	}
 	sort.Strings(checksumKeys)
+	checksumMismatch := false
 	for _, key := range checksumKeys {
 		pkgValues := pkgChecksums[key]
 		srcField, present := srcChecksums[key]
 		if present && equalChecksumArrays(pkgValues, srcField.Values) {
 			continue
 		}
+		checksumMismatch = true
 		line := srcField.Line
-		evidence := truncate(fmt.Sprintf("%s: .SRCINFO %q != PKGBUILD %q", key, srcField.Values, pkgValues), 320)
+		evidence := checksumMismatchEvidence(key, srcField.Values, pkgValues)
 		finding := Finding{Severity: "high", Category: "package_metadata", File: ".SRCINFO", Evidence: evidence, Rationale: "static PKGBUILD metadata differs from .SRCINFO", RuleID: "srcinfo-mismatch"}
 		if line > 0 {
 			finding.Line = &line
 		}
 		inv.Findings = append(inv.Findings, finding)
+	}
+	if checksumMismatch {
+		// Before the contained freeze, source provenance is parsed from the
+		// committed .SRCINFO. Once a statically resolvable PKGBUILD checksum
+		// disagrees with that file, its digest is not the binding makepkg will
+		// enforce. Keep the source identity for the briefing, but fail closed on
+		// the unsupported binding instead of claiming those bytes are pinned.
+		inv.Findings = append(inv.Findings, invalidateFixedDigestBindings(inv.Sources)...)
 	}
 	known := map[string]bool{}
 	for _, item := range inv.Files {
@@ -877,6 +898,48 @@ func equalChecksumArrays(left, right []string) bool {
 	return true
 }
 
+func checksumMismatchEvidence(key string, srcValues, pkgValues []string) string {
+	total := max(len(srcValues), len(pkgValues))
+	if total == 0 {
+		return key + ": field presence differs; .SRCINFO absent, PKGBUILD has an empty array"
+	}
+	differences, first := 0, -1
+	for index := 0; index < total; index++ {
+		same := index < len(srcValues) && index < len(pkgValues) && strings.EqualFold(srcValues[index], pkgValues[index])
+		if !same {
+			differences++
+			if first < 0 {
+				first = index
+			}
+		}
+	}
+	summary := fmt.Sprintf("%s: %d of %d checksums differ; first at index %d", key, differences, total, first+1)
+	valueAt := func(values []string, index int) string {
+		if index < 0 || index >= len(values) {
+			return "<missing>"
+		}
+		return values[index]
+	}
+	detail := fmt.Sprintf("%s (.SRCINFO %q, PKGBUILD %q)", summary, valueAt(srcValues, first), valueAt(pkgValues, first))
+	if len(detail) <= 320 {
+		return detail
+	}
+	return summary
+}
+
+type staticChecksumAnalysis struct {
+	Values     map[string][]string
+	unresolved map[string]bool
+	unknownAll bool
+}
+
+func (a staticChecksumAnalysis) Unresolved(name string) bool {
+	if _, resolved := a.Values[name]; resolved {
+		return false
+	}
+	return a.unknownAll || a.unresolved[name]
+}
+
 // staticPKGBUILDChecksumArrays returns only checksum arrays whose final
 // top-level assignment can be determined without executing Bash. It uses the
 // Bash AST so multiline arrays and comments are parsed as syntax rather than
@@ -884,12 +947,17 @@ func equalChecksumArrays(left, right []string) bool {
 // or dynamic reassignments delete any earlier value instead of manufacturing a
 // mismatch from stale state.
 func staticPKGBUILDChecksumArrays(text string) map[string][]string {
+	return analyzeStaticPKGBUILDChecksumArrays(text).Values
+}
+
+func analyzeStaticPKGBUILDChecksumArrays(text string) staticChecksumAnalysis {
+	analysis := staticChecksumAnalysis{Values: map[string][]string{}, unresolved: map[string]bool{}}
 	parsed, err := syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true)).Parse(strings.NewReader(text), "PKGBUILD")
 	if err != nil {
-		return map[string][]string{}
+		analysis.unknownAll = true
+		return analysis
 	}
 	variables := map[string]string{}
-	values := map[string][]string{}
 	for _, statement := range parsed.Stmts {
 		var assignments []*syntax.Assign
 		switch command := statement.Cmd.(type) {
@@ -905,8 +973,9 @@ func staticPKGBUILDChecksumArrays(text string) map[string][]string {
 			// command can mutate shell globals directly, through eval, or through a
 			// called function, so no value established before it remains static.
 			if _, function := statement.Cmd.(*syntax.FuncDecl); !function {
-				clear(values)
+				clear(analysis.Values)
 				clear(variables)
+				analysis.unknownAll = true
 			}
 			continue
 		}
@@ -921,21 +990,24 @@ func staticPKGBUILDChecksumArrays(text string) map[string][]string {
 			}
 			resolved, ok := evaluateStaticChecksumArray(assignment, variables)
 			if !ok {
-				delete(values, name)
+				delete(analysis.Values, name)
+				analysis.unresolved[name] = true
 				continue
 			}
 			if assignment.Append {
-				previous, known := values[name]
+				previous, known := analysis.Values[name]
 				if !known || len(previous) > 4096-len(resolved) {
-					delete(values, name)
+					delete(analysis.Values, name)
+					analysis.unresolved[name] = true
 					continue
 				}
 				resolved = append(append([]string(nil), previous...), resolved...)
 			}
-			values[name] = resolved
+			analysis.Values[name] = resolved
+			delete(analysis.unresolved, name)
 		}
 	}
-	return values
+	return analysis
 }
 
 func applyStaticScalarAssignment(assignment *syntax.Assign, variables map[string]string) {

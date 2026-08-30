@@ -217,6 +217,25 @@ func TestBwrapArgsReplaceRatherThanBindSessionDirectories(t *testing.T) {
 	}
 }
 
+func TestBwrapArgsExposeOnlyAnEmptyPacmanDatabase(t *testing.T) {
+	args := joined(Spec{Workdir: "/w", Argv: []string{"true"}, EmptyPacmanDatabase: true}.BwrapArgs(3))
+	for _, required := range []string{
+		"--tmpfs /var/lib/pacman",
+		"--dir /var/lib/pacman/local",
+		"--dir /tmp/pacman-cache",
+		"--dir /tmp/pacman-gnupg",
+	} {
+		if !strings.Contains(args, required) {
+			t.Fatalf("empty pacman view omitted %q: %s", required, args)
+		}
+	}
+	for _, forbidden := range []string{"--bind /var/lib/pacman", "--ro-bind /var/lib/pacman", "/etc/pacman.d/mirrorlist"} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("empty pacman view exposed host state through %q: %s", forbidden, args)
+		}
+	}
+}
+
 func TestBaseEnvCarriesNoHostCredentialPaths(t *testing.T) {
 	env := BaseEnv()
 	if env["HOME"] != homeTarget {

@@ -490,10 +490,13 @@ func TestBuildBoundaryConstructionAndKeyringCopy(t *testing.T) {
 		t.Fatalf("makepkg config snapshot failed: %#v %v", binds, err)
 	}
 	if rootOwned {
-		var dropinSnapshot string
+		var dropinSnapshot, pacmanSnapshot string
 		for _, bind := range binds {
 			if bind[1] == "/etc/makepkg.conf.d" {
 				dropinSnapshot = bind[0]
+			}
+			if bind[1] == "/etc/pacman.conf" {
+				pacmanSnapshot = bind[0]
 			}
 		}
 		info, statErr := os.Stat(dropinSnapshot)
@@ -504,6 +507,16 @@ func TestBuildBoundaryConstructionAndKeyringCopy(t *testing.T) {
 		snapshotEntries, snapshotErr := os.ReadDir(dropinSnapshot)
 		if hostErr == nil && (snapshotErr != nil || len(snapshotEntries) != len(hostEntries)) {
 			t.Fatalf("makepkg drop-in snapshot is incomplete: host=%d snapshot=%d err=%v", len(hostEntries), len(snapshotEntries), snapshotErr)
+		}
+		pacmanRaw, pacmanErr := os.ReadFile(pacmanSnapshot)
+		pacmanInfo, statErr := os.Stat(pacmanSnapshot)
+		if pacmanSnapshot == "" || pacmanErr != nil || statErr != nil || pacmanInfo.Mode().Perm() != 0o400 || string(pacmanRaw) != containedPacmanConfig {
+			t.Fatalf("private synthetic pacman config mismatch: binds=%#v mode=%v read=%v stat=%v content=%q", binds, pacmanInfo, pacmanErr, statErr, pacmanRaw)
+		}
+		for _, forbidden := range []string{"[core]", "[extra]", "Include", "Mirrorlist", "Server"} {
+			if strings.Contains(string(pacmanRaw), forbidden) {
+				t.Fatalf("synthetic pacman config contains repository material %q: %q", forbidden, pacmanRaw)
+			}
 		}
 	}
 	// Unix pathname sockets have a much shorter limit than ordinary paths.
@@ -650,6 +663,10 @@ func TestMakepkgSandboxProfileConstruction(t *testing.T) {
 	if !strings.Contains(offline, "--tmpfs\x00/build-home") {
 		t.Fatalf("the build home is not a tmpfs: %q", offline)
 	}
+	if !strings.Contains(offline, "--tmpfs\x00/var/lib/pacman\x00--dir\x00/var/lib/pacman/local") ||
+		strings.Contains(offline, "--bind\x00/var/lib/pacman") || strings.Contains(offline, "--ro-bind\x00/var/lib/pacman") {
+		t.Fatalf("the build did not get an isolated empty pacman database: %q", offline)
+	}
 
 	// Only the broker's client directory crosses in. Its control socket stays
 	// outside, so package code can request but never approve a destination.
@@ -774,7 +791,7 @@ func TestDoctorCLIAndWrapperFailurePaths(t *testing.T) {
 	if RunCLI(context.Background(), []string{"version"}) != 0 || RunCLI(context.Background(), []string{"config-check", "--provider-only", "--path", SystemConfigPath}) != 0 {
 		t.Fatal("safe CLI informational command failed")
 	}
-	if runReport([]string{"--latest", "extra"}) == 0 || runApproval("approve", nil) == 0 || runDoctorCommand(context.Background(), cfg, nil, []string{"extra"}) == 0 {
+	if runReport([]string{"--latest", "extra"}) == 0 || runInspect([]string{"--latest", "extra"}) == 0 || runApproval("approve", nil) == 0 || runDoctorCommand(context.Background(), cfg, nil, []string{"extra"}) == 0 {
 		t.Fatal("CLI helper status mismatch")
 	}
 	if RunMakepkg(context.Background(), nil) == 0 {
@@ -976,6 +993,7 @@ func TestReportValidationRejectsEverySecurityBindingClass(t *testing.T) {
 		func(r *Report) { r.Reviewer.Transport = "http" },
 		func(r *Report) { r.Reviewer.Verdicts = []Verdict{{}} },
 		func(r *Report) { r.Coverage.BytesSeen = -1 },
+		func(r *Report) { r.ReviewRoot = "relative/checkout" },
 		func(r *Report) { r.ArchiveProbe.Version = "" },
 		func(r *Report) { r.Manifest = append(r.Manifest, r.Manifest[0]) },
 		func(r *Report) { r.Manifest[0]["unexpected"] = true },

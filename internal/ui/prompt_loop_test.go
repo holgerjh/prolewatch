@@ -4,17 +4,69 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/holgerjh/prolewatch/internal/brief"
+	"github.com/holgerjh/prolewatch/internal/safe"
+	"golang.org/x/sys/unix"
 )
 
 func gateSurfaces() []brief.PrivilegedSurface {
 	return []brief.PrivilegedSurface{
 		{Member: ".INSTALL", Kind: brief.SurfaceScriptlet, When: "runs as root", Body: "post_install() { :; }"},
 		{Member: "usr/lib/systemd/system/foo.service", Kind: brief.SurfaceUnit, When: "runs as root", Body: "[Unit]"},
+	}
+}
+
+func openGatePTY(t *testing.T) (controller, follower *os.File) {
+	t.Helper()
+	controller, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no /dev/ptmx: %v", err)
+	}
+	if err := unix.IoctlSetPointerInt(int(controller.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		controller.Close()
+		t.Skipf("cannot unlock pty: %v", err)
+	}
+	number, err := unix.IoctlGetInt(int(controller.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		controller.Close()
+		t.Skipf("cannot get pty number: %v", err)
+	}
+	follower, err = os.OpenFile("/dev/pts/"+strconv.Itoa(number), os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		controller.Close()
+		t.Skipf("cannot open pty follower: %v", err)
+	}
+	t.Cleanup(func() { follower.Close(); controller.Close() })
+	return controller, follower
+}
+
+func TestGateKeepChoiceDoesNotWaitForEnter(t *testing.T) {
+	controller, follower := openGatePTY(t)
+	type result struct {
+		decision GateDecision
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		decision, err := promptGateTerminal(&safe.PromptTerminal{File: follower}, "demo", gateSurfaces())
+		done <- result{decision: decision, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := controller.WriteString("k"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.decision.Cancel || len(got.decision.Strip) != 0 {
+			t.Fatalf("single k produced %+v (%v)", got.decision, got.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("root gate still waited for Enter after k")
 	}
 }
 

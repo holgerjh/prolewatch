@@ -116,7 +116,7 @@ func RenderGatePrompt(packagePath string, surfaces []brief.PrivilegedSurface) st
 		fmt.Fprintf(&out, "   [%d] strip %d", index+1, index+1)
 	}
 	out.WriteString("   [s] strip all   [c] cancel\n")
-	out.WriteString("Several numbers may be given at once, separated by commas.\n")
+	out.WriteString("k, s, and c act immediately. Finish numbered selections with Enter; commas select several.\n")
 	out.WriteString("Removing a surface a package genuinely needs produces a broken install.\n")
 	out.WriteString("Choice [k]: ")
 	return out.String()
@@ -265,7 +265,7 @@ func PromptGate(packageName string, surfaces []brief.PrivilegedSurface) (GateDec
 	}
 	defer tty.Close()
 
-	return promptGateFrom(gateInput{file: tty.File, timeout: GatePromptTimeout}, tty, packageName, surfaces)
+	return promptGateTerminal(tty, packageName, surfaces)
 }
 
 // GatePromptTimeout bounds how long the gate waits for a keystroke.
@@ -330,6 +330,33 @@ func (g gateInput) Read(buffer []byte) (int, error) {
 // Keeping every automatic surface is the most consequential choice, so it must
 // come from a displayed question and a real answer rather than silence.
 var ErrNoGateDecision = errors.New("no privileged-integration decision was given")
+
+// promptGateTerminal gives the letter actions the same immediate-key behavior
+// as the package-review prompt while retaining Enter-terminated numeric lists.
+// The latter cannot be single-key choices because "1" and "1,2" must remain
+// distinguishable.
+func promptGateTerminal(terminal *safe.PromptTerminal, packageName string, surfaces []brief.PrivilegedSurface) (GateDecision, error) {
+	fmt.Fprint(terminal, RenderGatePrompt(packageName, surfaces))
+	for attempt := 0; attempt < 5; attempt++ {
+		answer, err := terminal.ReadChoiceOrLine(GatePromptTimeout, "ksc", 'k', "0123456789, ", 4096)
+		if errors.Is(err, safe.ErrYesNoPromptTimeout) {
+			fmt.Fprintln(terminal, "\nInstall stopped: the privileged-integration gate timed out waiting for an answer.")
+			return GateDecision{}, ErrGatePromptTimeout
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return GateDecision{}, ErrNoGateDecision
+			}
+			return GateDecision{}, err
+		}
+		decision, ok := ParseGateChoice(answer, surfaces)
+		if ok {
+			return decision, nil
+		}
+		fmt.Fprint(terminal, "Not a choice. [k] keep all, numbers such as 1,3 to strip those, [s] strip all, [c] cancel: ")
+	}
+	return GateDecision{}, ErrNoGateDecision
+}
 
 // promptGateFrom is the loop, separated from the terminal so it can be tested.
 // Re-asking rather than guessing is the property under test: an unrecognised
