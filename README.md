@@ -475,8 +475,8 @@ important.
 
 The design went through many iterations and received much improvement and many
 targeted corrections by me. The project was also challenged using AI. Three
-frontier models (Fable 5, Opus 5 and gpt-5.6-sol) were used adversarially again
-and again against the codebase and
+frontier models (Fable 5, Opus 5 and gpt-5.6-sol) were used adversarially repeatedly
+against the codebase and
 the threat model, and their findings substantially drove what the design is now.
 Every commit passes a release gate: race-enabled tests, `govulncheck`, an
 import-direction layering check, a privileged-asset invariant, nine deterministic
