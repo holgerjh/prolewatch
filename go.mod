@@ -8,7 +8,7 @@ require (
 	golang.org/x/sys v0.47.0
 )
 
-require mvdan.cc/sh/v3 v3.13.1
+require mvdan.cc/sh/v3 v3.14.0
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
