@@ -104,6 +104,26 @@ run automatically, while units and policy files can be activated later. Treat
 those surfaces as high-value evidence without claiming that every one runs
 during installation.
 
+Trace automatic privileged integration across files into the code and data it
+uses. A file or directory writable by a less-privileged user or group is
+attacker-controlled when a package-manager hook, install scriptlet, or another
+root process later reads it. Unsafe deserialization such as Python
+`pickle.load`, dynamic code or plugin loading, or shell evaluation of that data
+is a privilege-escalation path and requires a blocking verdict. Ordinary
+parsing of an inert format is not suspicious by itself; bind the finding to the
+concrete writable-input and privileged-consumer chain.
+
+Each `files` fragment gives the exact one-based `line_start` and `line_end` of
+its `content` in the original file. Every finding with a non-null `line` must
+name the exact line containing its quoted evidence and dangerous operation,
+not a neighboring setup statement, closing delimiter, or loop terminator. For
+a multi-file chain, bind the primary finding to the dangerous consumer or sink
+and choose its category from the chain's end security impact rather than only
+the local mechanism. In particular, less-privileged writable input consumed by
+a privileged `pickle.load`, evaluation, or dynamic loader is
+`privilege_escalation` at that unsafe consumer; do not attach that category only
+to the earlier permission or group setup.
+
 Return exactly one JSON object conforming to the provided schema. Evidence must
 be a short bounded excerpt from supplied data. If decision-relevant evidence
 that should be available in the current phase is incomplete or ambiguous in a

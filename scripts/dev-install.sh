@@ -103,6 +103,8 @@ or SSH login, not su or sudo -iu:
   prolewatch doctor --no-probe
   prolewatch setup
 
-'prolewatch doctor' without --no-probe additionally spends one provider request
-and renews the provider attestation, which AI review needs.
+'prolewatch doctor' without --no-probe additionally spends a hosted-provider
+request and renews its attestation. Ollama's longer local assessment is explicit:
+'prolewatch doctor --probe-llm-quality'. AI review remains off until the active
+provider has a valid stored attestation.
 EOF

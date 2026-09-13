@@ -9,19 +9,22 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/holgerjh/prolewatch/internal/brief"
 	"github.com/holgerjh/prolewatch/internal/safe"
 )
 
-const DispatchProtocolVersion = 1
+const DispatchProtocolVersion = 3
 
 var ErrProviderTimeout = errors.New("provider request timed out")
 
 type SelectedFile struct {
 	File       string `json:"file"`
 	ByteOffset int    `json:"byte_offset"`
+	LineStart  int    `json:"line_start"`
+	LineEnd    int    `json:"line_end"`
 	Content    string `json:"content"`
 }
 
@@ -62,10 +65,12 @@ type ReviewSnapshot struct {
 	SourceVerification      brief.SourceVerification `json:"source_verification"`
 }
 
-// ReviewOptions changes advisory guidance selection without removing any
-// deterministic finding or selected source material from the provider view.
+// ReviewOptions changes advisory guidance selection and records why an optional
+// call ran without removing any deterministic finding or selected source
+// material from the provider view.
 type ReviewOptions struct {
 	SkipGuidanceFindingIDs map[string]bool
+	Trigger                string
 }
 
 func validHexDigest(value string) bool {
@@ -198,11 +203,18 @@ func (s ReviewSnapshot) Validate() error {
 		seenTargets[target.FindingID] = true
 	}
 	for _, file := range s.Files {
-		if !paths[file.File] || file.ByteOffset < 0 {
+		if !paths[file.File] || file.ByteOffset < 0 || file.LineStart < 1 || file.LineEnd < file.LineStart {
 			return errors.New("invalid selected file")
 		}
 		if len(file.Content) > 20*1024*1024 {
 			return errors.New("selected content exceeds hard limit")
+		}
+		lineEnd := file.LineStart + strings.Count(file.Content, "\n")
+		if strings.HasSuffix(file.Content, "\n") {
+			lineEnd--
+		}
+		if lineEnd != file.LineEnd {
+			return errors.New("selected file line range does not match its content")
 		}
 	}
 	return nil
@@ -246,8 +258,9 @@ func (target GuidanceTarget) validateAnchor() error {
 }
 
 type DispatchRequest struct {
-	// probe returns fixed metadata, canary exercises provider isolation, and
-	// review is the only operation allowed to carry a snapshot or verdict.
+	// probe returns fixed metadata, canary exercises provider isolation, review
+	// carries an accepted verdict, and diagnose-review carries only an accepted
+	// verdict or a redacted validation description.
 	ProtocolVersion int             `json:"protocol_version"`
 	Operation       string          `json:"operation"`
 	Snapshot        *ReviewSnapshot `json:"snapshot,omitempty"`
@@ -262,9 +275,9 @@ func (r DispatchRequest) Validate() error {
 		if r.Snapshot != nil {
 			return fmt.Errorf("%s must not include a snapshot", r.Operation)
 		}
-	case "review":
+	case "review", "diagnose-review":
 		if r.Snapshot == nil {
-			return errors.New("review requires a snapshot")
+			return fmt.Errorf("%s requires a snapshot", r.Operation)
 		}
 		return r.Snapshot.Validate()
 	default:
@@ -278,6 +291,9 @@ type ProviderMetadata struct {
 	Transport      string `json:"transport"`
 	RuntimeVersion string `json:"runtime_version"`
 	Model          string `json:"model"`
+	ModelDigest    string `json:"model_digest,omitempty"`
+	ContextTokens  int    `json:"context_tokens,omitempty"`
+	Thinking       bool   `json:"thinking,omitempty"`
 	Effort         string `json:"effort"`
 	AdapterPolicy  string `json:"adapter_policy"`
 	// CompatibilityWarning is set when the provider CLI is newer than the
@@ -288,33 +304,68 @@ type ProviderMetadata struct {
 }
 
 type DispatchResponse struct {
-	ProtocolVersion int              `json:"protocol_version"`
-	Metadata        ProviderMetadata `json:"metadata"`
-	Verdict         *Verdict         `json:"verdict"`
+	ProtocolVersion int                          `json:"protocol_version"`
+	Metadata        ProviderMetadata             `json:"metadata"`
+	Verdict         *Verdict                     `json:"verdict"`
+	OllamaMetrics   []OllamaRequestMetrics       `json:"ollama_metrics,omitempty"`
+	Diagnostic      *LLMProviderReviewDiagnostic `json:"diagnostic,omitempty"`
 }
 
 func (r DispatchResponse) Validate(operation string) error {
 	if r.ProtocolVersion != DispatchProtocolVersion {
 		return errors.New("unsupported dispatcher response protocol")
 	}
-	if r.Metadata.Transport != "cli" || (r.Metadata.Provider != "codex" && r.Metadata.Provider != "anthropic") || r.Metadata.RuntimeVersion == "" || r.Metadata.Model == "" || r.Metadata.AdapterPolicy == "" {
+	cli := r.Metadata.Transport == "cli" && (r.Metadata.Provider == "codex" || r.Metadata.Provider == "anthropic") && r.Metadata.ModelDigest == "" && r.Metadata.ContextTokens == 0 && !r.Metadata.Thinking
+	ollama := r.Metadata.Transport == "http-loopback" && r.Metadata.Provider == "ollama" && validHexDigest(r.Metadata.ModelDigest) && r.Metadata.ContextTokens >= 16_384
+	validMetadataEffort := (cli && validEffort(r.Metadata.Effort)) || (ollama && validOllamaEffectiveReasoning(r.Metadata.Effort))
+	if (!cli && !ollama) || r.Metadata.RuntimeVersion == "" || r.Metadata.Model == "" || r.Metadata.AdapterPolicy == "" || !validMetadataEffort {
 		return errors.New("invalid provider metadata")
 	}
 	if operation == "review" {
+		if r.Diagnostic != nil {
+			return errors.New("review unexpectedly returned a diagnostic")
+		}
 		if r.Verdict == nil {
 			return errors.New("dispatcher omitted verdict")
 		}
+		if r.Metadata.Provider == "ollama" {
+			if len(r.OllamaMetrics) != 1 || r.OllamaMetrics[0].Validate() != nil {
+				return errors.New("dispatcher omitted valid Ollama request metrics")
+			}
+		} else if len(r.OllamaMetrics) != 0 {
+			return errors.New("CLI provider returned Ollama request metrics")
+		}
 		return r.Verdict.Validate()
 	}
-	if r.Verdict != nil {
+	if operation == "diagnose-review" {
+		if !ollama || r.Diagnostic == nil {
+			return errors.New("diagnostic review requires an Ollama diagnostic")
+		}
+		if err := validateProviderReviewDiagnostic(*r.Diagnostic, r.Verdict); err != nil {
+			return err
+		}
+		if len(r.OllamaMetrics) != 1 || r.OllamaMetrics[0].Validate() != nil {
+			return errors.New("diagnostic review omitted valid Ollama request metrics")
+		}
+		return nil
+	}
+	if r.Verdict != nil || len(r.OllamaMetrics) != 0 || r.Diagnostic != nil {
 		return errors.New("probe unexpectedly returned a verdict")
 	}
 	return nil
 }
 
 type Reviewer struct {
-	Config  Config
-	Command []string
+	Config        Config
+	Command       []string
+	metricsMu     sync.Mutex
+	ollamaMetrics []OllamaRequestMetrics
+}
+
+func (r *Reviewer) OllamaMetrics() []OllamaRequestMetrics {
+	r.metricsMu.Lock()
+	defer r.metricsMu.Unlock()
+	return append([]OllamaRequestMetrics(nil), r.ollamaMetrics...)
 }
 
 func NewReviewer(cfg Config) *Reviewer {
@@ -334,6 +385,9 @@ func (r *Reviewer) Probe(ctx context.Context) (ProviderMetadata, error) {
 // the invoking user - there is no service account, and has not been one since
 // the single-administrator redesign.
 func (r *Reviewer) Canary(ctx context.Context) (ProviderMetadata, error) {
+	if r.Config.Provider == "ollama" {
+		return ProviderMetadata{}, errors.New("host/workspace isolation is not observable for the http-loopback Ollama transport")
+	}
 	response, err := r.dispatch(ctx, DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "canary"})
 	if err != nil {
 		return ProviderMetadata{}, err
@@ -345,22 +399,40 @@ func (r *Reviewer) Review(ctx context.Context, packageBase, phase string, invent
 	// Require identical provider metadata across all batches and reject findings
 	// for paths absent from the full inventory. Batch boundaries cannot change
 	// which provider implementation or file namespace made the decision.
-	batches, err := r.batchesWithOptions(packageBase, phase, inventory, options)
+	if options.Trigger != "" && options.Trigger != reviewTriggerOnDemand {
+		return ProviderMetadata{}, nil, errors.New("unsupported review trigger")
+	}
+	var expectedMetadata ProviderMetadata
+	reasoning := "off"
+	if r.Config.Provider == "ollama" {
+		probe, err := r.dispatch(ctx, DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"})
+		if err != nil {
+			return ProviderMetadata{}, nil, err
+		}
+		expectedMetadata = probe.Metadata
+		reasoning = probe.Metadata.Effort
+	}
+	batches, err := r.batchesWithProviderOptions(packageBase, phase, inventory, options, reasoning)
 	if err != nil {
 		return ProviderMetadata{}, nil, err
 	}
-	var metadata ProviderMetadata
+	metadata := expectedMetadata
 	var verdicts []Verdict
 	expectedGuidance := map[string]string{}
 	for _, target := range batches[0].GuidanceTargets {
 		expectedGuidance[target.FindingID] = target.AnchorText
 	}
-	reviewTrigger := conditionalReviewTrigger(r.Config, phase, inventory.Findings)
+	reviewTrigger := options.Trigger
 	for index, batch := range batches {
-		progressAI(ctx, index+1, len(batches), r.Config.Review.TimeoutSeconds, reviewTrigger)
+		progressAI(ctx, index+1, len(batches), r.Config.ProviderTimeoutSeconds(), reviewTrigger)
 		response, err := r.dispatch(ctx, DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "review", Snapshot: &batch})
 		if err != nil {
 			return ProviderMetadata{}, nil, err
+		}
+		if len(response.OllamaMetrics) != 0 {
+			r.metricsMu.Lock()
+			r.ollamaMetrics = append(r.ollamaMetrics, response.OllamaMetrics...)
+			r.metricsMu.Unlock()
 		}
 		if metadata.Provider == "" {
 			metadata = response.Metadata
@@ -414,7 +486,7 @@ func (r *Reviewer) dispatch(parent context.Context, request DispatchRequest) (Di
 	if int64(len(raw)) > r.Config.Limits.MaxDispatchBytes {
 		return DispatchResponse{}, errors.New("dispatcher payload exceeds hard input limit")
 	}
-	timeout := time.Duration(r.Config.Review.TimeoutSeconds+r.Config.Review.KillGraceSeconds) * time.Second
+	timeout := time.Duration(r.Config.ProviderTimeoutSeconds()+r.Config.Review.KillGraceSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	var response DispatchResponse
@@ -458,7 +530,15 @@ func (r *Reviewer) dispatch(parent context.Context, request DispatchRequest) (Di
 		return DispatchResponse{}, errors.New("dispatcher returned the wrong active provider")
 	}
 	configured := r.Config.ActiveProvider()
-	if response.Metadata.Model != configured.Model || response.Metadata.Effort != configured.Effort {
+	if response.Metadata.Model != configured.Model {
+		return DispatchResponse{}, errors.New("dispatcher returned unexpected model or effort metadata")
+	}
+	if r.Config.Provider == "ollama" {
+		expected, err := ollamaReasoningLevel(configured.Effort, response.Metadata.Thinking)
+		if err != nil || response.Metadata.Effort != expected {
+			return DispatchResponse{}, errors.New("dispatcher returned unexpected Ollama reasoning metadata")
+		}
+	} else if response.Metadata.Effort != configured.Effort {
 		return DispatchResponse{}, errors.New("dispatcher returned unexpected model or effort metadata")
 	}
 	return response, nil
@@ -469,6 +549,14 @@ func (r *Reviewer) batches(packageBase, phase string, inventory *brief.Inventory
 }
 
 func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brief.Inventory, options ReviewOptions) ([]ReviewSnapshot, error) {
+	reasoning := "off"
+	if r.Config.Provider == "ollama" {
+		reasoning, _ = ollamaReasoningLevel(r.Config.Providers.Ollama.Reasoning, true)
+	}
+	return r.batchesWithProviderOptions(packageBase, phase, inventory, options, reasoning)
+}
+
+func (r *Reviewer) batchesWithProviderOptions(packageBase, phase string, inventory *brief.Inventory, options ReviewOptions, ollamaReasoning string) ([]ReviewSnapshot, error) {
 	if err := brief.ValidatePackageBase(packageBase); err != nil {
 		return nil, err
 	}
@@ -505,8 +593,31 @@ func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brie
 	var pieces []SelectedFile
 	var total int64
 	// Cap each content piece at half a batch to leave deterministic room for JSON
-	// escaping and snapshot metadata; never use pieces smaller than 1 KiB.
+	// escaping and snapshot metadata. Ollama may reduce this further to fit the
+	// configured context without truncation.
 	chunkSize := max(1024, r.Config.Review.BatchBytes/2)
+	ollamaCeiling := 0
+	if r.Config.Provider == "ollama" {
+		ollamaCeiling = ollamaInputByteCeiling(r.Config.Providers.Ollama.ContextTokens, ollamaReasoning)
+		fixed := base
+		fixed.BatchIndex, fixed.BatchCount = 999_999, 999_999
+		fixed.Files = []SelectedFile{{File: "<none>", LineStart: 1, LineEnd: 1, Content: "No text selected."}}
+		_, fixedRaw, _, err := buildOllamaChatRequest(r.Config, fixed, ollamaReasoning)
+		if err != nil {
+			return nil, err
+		}
+		if ollamaCeiling <= 0 || len(fixedRaw) > ollamaCeiling {
+			return nil, fmt.Errorf("fixed Ollama review context is %d bytes, above the context-derived input ceiling of %d", len(fixedRaw), ollamaCeiling)
+		}
+		// JSON can expand one source byte to a six-byte escape. Keep additional
+		// room for the selected-file path and object framing, then verify each
+		// assembled request exactly below.
+		available := ollamaCeiling - len(fixedRaw) - 4096
+		if available <= 0 {
+			return nil, errors.New("fixed Ollama review context leaves no selected-text budget")
+		}
+		chunkSize = min(chunkSize, max(1, available/6))
+	}
 	changed := map[string]bool{}
 	for _, item := range inventory.ManifestDiff {
 		changed[item.Path] = true
@@ -531,15 +642,25 @@ func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brie
 		}
 		for offset := 0; offset < len(encoded); offset += chunkSize {
 			end := min(len(encoded), offset+chunkSize)
-			pieces = append(pieces, SelectedFile{File: record.Path, ByteOffset: offset, Content: safe.ValidUTF8OrReplacement(encoded[offset:end])})
+			pieces = append(pieces, selectedFilePiece(record.Path, encoded, offset, end))
 		}
 	}
 	if len(pieces) == 0 {
-		pieces = []SelectedFile{{File: "<none>", Content: "No text selected."}}
+		pieces = []SelectedFile{{File: "<none>", LineStart: 1, LineEnd: 1, Content: "No text selected."}}
 	}
 	var batches []ReviewSnapshot
 	var current []SelectedFile
 	currentSize := 0
+	ollamaFits := func(files []SelectedFile) (bool, error) {
+		if r.Config.Provider != "ollama" {
+			return true, nil
+		}
+		candidate := base
+		candidate.BatchIndex, candidate.BatchCount = 999_999, 999_999
+		candidate.Files = files
+		_, raw, _, err := buildOllamaChatRequest(r.Config, candidate, ollamaReasoning)
+		return err == nil && len(raw) <= ollamaCeiling, err
+	}
 	flush := func() {
 		if len(current) == 0 {
 			return
@@ -553,8 +674,19 @@ func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brie
 	}
 	for _, piece := range pieces {
 		raw, _ := json.Marshal(piece)
-		if len(current) > 0 && currentSize+len(raw) > r.Config.Review.BatchBytes {
+		fits, err := ollamaFits(append(append([]SelectedFile(nil), current...), piece))
+		if err != nil {
+			return nil, err
+		}
+		if len(current) > 0 && (currentSize+len(raw) > r.Config.Review.BatchBytes || !fits) {
 			flush()
+			fits, err = ollamaFits([]SelectedFile{piece})
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !fits {
+			return nil, fmt.Errorf("selected file chunk %q cannot fit the context-derived Ollama input ceiling", piece.File)
 		}
 		current = append(current, piece)
 		currentSize += len(raw)
@@ -562,8 +694,26 @@ func (r *Reviewer) batchesWithOptions(packageBase, phase string, inventory *brie
 	flush()
 	for index := range batches {
 		batches[index].BatchCount = len(batches)
+		if fits, err := ollamaFits(batches[index].Files); err != nil || !fits {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("final Ollama batch exceeds context-derived input ceiling")
+		}
 	}
 	return batches, nil
+}
+
+func selectedFilePiece(path string, content []byte, offset, end int) SelectedFile {
+	lineStart := 1 + bytes.Count(content[:offset], []byte{'\n'})
+	lineEnd := lineStart
+	if end > offset {
+		lineEnd += bytes.Count(content[offset:end-1], []byte{'\n'})
+	}
+	return SelectedFile{
+		File: path, ByteOffset: offset, LineStart: lineStart, LineEnd: lineEnd,
+		Content: safe.ValidUTF8OrReplacement(content[offset:end]),
+	}
 }
 
 func reviewGuidanceTargets(findings []brief.Finding, files []brief.FileRecord, minimumSeverity string, excluded map[string]bool) ([]GuidanceTarget, error) {

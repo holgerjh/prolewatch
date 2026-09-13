@@ -1,8 +1,6 @@
 package audit
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/holgerjh/prolewatch/internal/brief"
@@ -20,13 +18,13 @@ import (
 const (
 	// Schema/behavior versions participate in stored evidence and policy
 	// identity. Increment the relevant value when its interpretation changes.
-	ApplicationVersion    = "0.11.0"
-	ReportSchemaVersion   = 14
+	ApplicationVersion    = "0.12.0"
+	ReportSchemaVersion   = 16
 	MarkerSchemaVersion   = 8
 	ApprovalSchemaVersion = 7
 	ScannerVersion        = 8
 	RulesVersion          = 13
-	ReviewSnapshotVersion = 8
+	ReviewSnapshotVersion = 10
 	MinYayVersion         = "13.0.1"
 	// MaxYayVersion is the first yay release the makepkg wrapper has not been
 	// checked against. It is a warning boundary, not a refusal: interception is
@@ -45,9 +43,11 @@ const (
 	// containment is Prolewatch's own bubblewrap sandbox rather than Codex's
 	// `--sandbox` flag. Refusing to run the day Arch ships a new Codex would
 	// cost more than the refusal buys.
-	MaxCodexVersion  = "0.150.0"
+	MaxCodexVersion  = "0.155.0"
 	MinClaudeVersion = "2.1.205"
 	MaxClaudeVersion = "3.0.0"
+	MinOllamaVersion = "0.32.0"
+	MaxOllamaVersion = "0.34.0"
 )
 
 const (
@@ -58,7 +58,7 @@ const (
 )
 
 const (
-	systemConfigDefaultPath       = "/etc/prolewatch/config.json"
+	systemConfigDefaultPath       = "/etc/prolewatch/config.yaml"
 	maxConfigDocumentBytes        = 1 << 20
 	maxProviderModelBytes         = 256
 	maxNetworkDestinations        = 64
@@ -69,6 +69,8 @@ const (
 	defaultReviewTimeoutSeconds   = 180
 	defaultReviewKillGraceSeconds = 5
 	defaultReviewBatchBytes       = 768_000
+	defaultOllamaKeepAliveSeconds = 300
+	defaultOllamaTimeoutSeconds   = 300
 	defaultBuildMemoryBytes       = 8 << 30
 	defaultBuildCPUCount          = 4
 	defaultBuildTasks             = 512
@@ -86,9 +88,21 @@ type ProviderConfig struct {
 	Effort string `json:"effort"`
 }
 
+// OllamaProviderConfig deliberately has no endpoint or credential fields.
+// The pilot speaks only to the fixed loopback API, never to a user-selected
+// host, proxy, or Ollama Cloud endpoint.
+type OllamaProviderConfig struct {
+	Model            string `json:"model"`
+	ContextTokens    int    `json:"context_tokens"`
+	Reasoning        string `json:"reasoning"`
+	KeepAliveSeconds *int   `json:"keep_alive_seconds"`
+	TimeoutSeconds   int    `json:"timeout_seconds"`
+}
+
 type ProvidersConfig struct {
-	Codex     ProviderConfig `json:"codex"`
-	Anthropic ProviderConfig `json:"anthropic"`
+	Codex     ProviderConfig       `json:"codex"`
+	Anthropic ProviderConfig       `json:"anthropic"`
+	Ollama    OllamaProviderConfig `json:"ollama"`
 }
 
 type ReviewConfig struct {
@@ -98,22 +112,13 @@ type ReviewConfig struct {
 	TimeoutSeconds              int    `json:"timeout_seconds"`
 	KillGraceSeconds            int    `json:"kill_grace_seconds"`
 	BatchBytes                  int    `json:"batch_bytes"`
-	// IncludeRecipePhase adds the recipe phase to AI review. Off by default:
-	// the recipe is two small, highly structured files, which is where the
-	// deterministic rules are strongest and where the model has least to add,
-	// while every phase costs a provider round trip per package. A ten-package
-	// upgrade pays that three times over instead of twice.
-	//
-	// Deliberately a boolean that only ever adds a phase, rather than a list of
-	// phases to run. A list would be more general and would also mean a typo
-	// silently disables a gate while looking like it worked; this cannot be
-	// misconfigured into weakening anything.
-	IncludeRecipePhase bool `json:"include_recipe_phase"`
-	// GuideDecisionFindings spends a recipe-phase provider call only when the
-	// deterministic pass found evidence at the configured manual-review
-	// threshold. It is guidance, not an AI override: the deterministic decision
-	// and every finding remain intact.
-	GuideDecisionFindings bool `json:"guide_decision_findings"`
+	// IncludeRecipePhase is retained only to migrate pre-0.12 configurations.
+	// New files use Phases; strict validation prevents typos and duplicates.
+	IncludeRecipePhase bool `json:"include_recipe_phase,omitempty"`
+	// Phases reflects the different local cost profile without weakening the
+	// deterministic gates. Existing files without this field are normalized
+	// from IncludeRecipePhase during loading.
+	Phases []string `json:"phases"`
 }
 
 type BuildConfig struct {
@@ -155,8 +160,9 @@ func DefaultConfig() Config {
 		Providers: ProvidersConfig{
 			Codex:     ProviderConfig{Model: "gpt-5.6-sol", Effort: "high"},
 			Anthropic: ProviderConfig{Model: "sonnet", Effort: "high"},
+			Ollama:    OllamaProviderConfig{Model: "qwen3:14b", ContextTokens: 40_960, Reasoning: "off", KeepAliveSeconds: intPointer(defaultOllamaKeepAliveSeconds), TimeoutSeconds: defaultOllamaTimeoutSeconds},
 		},
-		Review: ReviewConfig{Mode: ReviewModeDeterministicOnly, MinimumConfidence: "high", ManualReviewMinimumSeverity: "high", TimeoutSeconds: defaultReviewTimeoutSeconds, KillGraceSeconds: defaultReviewKillGraceSeconds, BatchBytes: defaultReviewBatchBytes, GuideDecisionFindings: true},
+		Review: ReviewConfig{Mode: ReviewModeDeterministicOnly, MinimumConfidence: "high", ManualReviewMinimumSeverity: "high", TimeoutSeconds: defaultReviewTimeoutSeconds, KillGraceSeconds: defaultReviewKillGraceSeconds, BatchBytes: defaultReviewBatchBytes, Phases: []string{"sources", "artifact"}},
 		Limits: briefDefaults.Limits,
 		Build: BuildConfig{MemoryBytes: defaultBuildMemoryBytes, CPUCount: defaultBuildCPUCount, TasksMax: defaultBuildTasks,
 			TimeoutSeconds: defaultBuildTimeoutSeconds, WorkspaceBytes: defaultWorkspaceBytes,
@@ -171,28 +177,24 @@ func LoadConfig(path string) (Config, error) {
 	if path == "" {
 		path = SystemConfigPath
 	}
+	if filepath.Ext(path) != ".yaml" {
+		return Config{}, errors.New("configuration must be a .yaml file")
+	}
 	raw, err := readConfig(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read configuration %s: %w%s", path, err, missingConfigAdvice(path, err))
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var cfg Config
-	if err := dec.Decode(&cfg); err != nil {
+	cfg, err := decodeConfigYAML(raw)
+	if err != nil {
 		return Config{}, fmt.Errorf("parse configuration %s: %w", path, err)
 	}
 	cfg.Network = normalizeNetworkConfig(cfg.Network)
+	cfg.Providers.Ollama = normalizeOllamaProviderConfig(cfg.Providers.Ollama)
+	cfg.Review = normalizeReviewConfig(cfg.Review)
 	// A missing presentation-only style uses the safe default without requiring
 	// a schema migration.
 	if cfg.Terminal.Style == "" {
 		cfg.Terminal.Style = TerminalStyleBrand
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return Config{}, errors.New("configuration contains trailing JSON")
-		}
-		return Config{}, fmt.Errorf("parse trailing configuration data: %w", err)
 	}
 	return cfg, cfg.Validate()
 }
@@ -203,7 +205,7 @@ func missingConfigAdvice(path string, cause error) string {
 	if !errors.Is(cause, fs.ErrNotExist) || filepath.Clean(path) != systemConfigDefaultPath {
 		return ""
 	}
-	shipped := filepath.Join(ShareRoot(), "default-config.json")
+	shipped := filepath.Join(ShareRoot(), "default-config.yaml")
 	if info, err := os.Stat(shipped); err != nil || !info.Mode().IsRegular() {
 		return ""
 	}
@@ -247,6 +249,33 @@ func normalizeNetworkConfig(network egress.Config) egress.Config {
 	return network
 }
 
+func normalizeOllamaProviderConfig(provider OllamaProviderConfig) OllamaProviderConfig {
+	defaults := DefaultConfig().Providers.Ollama
+	if provider.Reasoning == "" {
+		provider.Reasoning = defaults.Reasoning
+	}
+	if provider.KeepAliveSeconds == nil {
+		provider.KeepAliveSeconds = defaults.KeepAliveSeconds
+	}
+	if provider.TimeoutSeconds == 0 {
+		provider.TimeoutSeconds = defaults.TimeoutSeconds
+	}
+	return provider
+}
+
+func normalizeReviewConfig(review ReviewConfig) ReviewConfig {
+	if review.Phases == nil {
+		review.Phases = []string{"sources", "artifact"}
+		if review.IncludeRecipePhase {
+			review.Phases = append([]string{"recipe"}, review.Phases...)
+		}
+	}
+	review.IncludeRecipePhase = false
+	return review
+}
+
+func intPointer(value int) *int { return &value }
+
 func readConfig(path string) ([]byte, error) {
 	// One MiB is a hard document budget, not a configurable policy. Open with
 	// O_NOFOLLOW and compare metadata before/after reading to reject symlink and
@@ -281,10 +310,45 @@ func readConfig(path string) ([]byte, error) {
 }
 
 func (c Config) ActiveProvider() ProviderConfig {
-	if c.Provider == "anthropic" {
+	switch c.Provider {
+	case "anthropic":
 		return c.Providers.Anthropic
+	case "ollama":
+		return ProviderConfig{Model: c.Providers.Ollama.Model, Effort: c.Providers.Ollama.Reasoning}
+	default:
+		return c.Providers.Codex
 	}
-	return c.Providers.Codex
+}
+
+func (c Config) ActiveProviderPolicy() any {
+	if c.Provider == "ollama" {
+		return c.Providers.Ollama
+	}
+	return c.ActiveProvider()
+}
+
+func (c Config) ProviderTimeoutSeconds() int {
+	if c.Provider == "ollama" {
+		return c.Providers.Ollama.TimeoutSeconds
+	}
+	return c.Review.TimeoutSeconds
+}
+
+func (c Config) OllamaKeepAliveSeconds() int {
+	if c.Providers.Ollama.KeepAliveSeconds == nil {
+		return defaultOllamaKeepAliveSeconds
+	}
+	return *c.Providers.Ollama.KeepAliveSeconds
+}
+
+func (c Config) ReviewPhaseEnabled(phase string) bool {
+	name := map[string]string{"pre": "recipe", "post": "sources", "artifact": "artifact"}[phase]
+	for _, configured := range c.Review.Phases {
+		if configured == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) Validate() error {
@@ -302,7 +366,7 @@ func (c Config) Validate() error {
 	if !brief.ValidSeverity(c.Review.ManualReviewMinimumSeverity) {
 		return fmt.Errorf("unsupported manual review minimum severity %q", c.Review.ManualReviewMinimumSeverity)
 	}
-	if c.Provider != "codex" && c.Provider != "anthropic" {
+	if c.Provider != "codex" && c.Provider != "anthropic" && c.Provider != "ollama" {
 		return fmt.Errorf("unsupported provider %q", c.Provider)
 	}
 	for name, p := range map[string]ProviderConfig{"codex": c.Providers.Codex, "anthropic": c.Providers.Anthropic} {
@@ -313,8 +377,36 @@ func (c Config) Validate() error {
 			return fmt.Errorf("providers.%s.effort is unsupported", name)
 		}
 	}
+	if c.Provider == "ollama" && (c.Providers.Ollama.Model == "" || len(c.Providers.Ollama.Model) > maxProviderModelBytes || c.Providers.Ollama.ContextTokens == 0) {
+		return fmt.Errorf("providers.ollama.model and providers.ollama.context_tokens must be set when Ollama is active (model at most %d bytes)", maxProviderModelBytes)
+	}
+	if c.Providers.Ollama.ContextTokens != 0 && (c.Providers.Ollama.ContextTokens < 16_384 || c.Providers.Ollama.ContextTokens > 262_144) {
+		return errors.New("providers.ollama.context_tokens must be zero while unconfigured or between 16384 and 262144")
+	}
+	if !validOllamaReasoning(c.Providers.Ollama.Reasoning) {
+		return errors.New("providers.ollama.reasoning must be auto, off, low, medium, or high")
+	}
+	if c.Providers.Ollama.KeepAliveSeconds == nil || *c.Providers.Ollama.KeepAliveSeconds < 0 || *c.Providers.Ollama.KeepAliveSeconds > 3_600 {
+		return errors.New("providers.ollama.keep_alive_seconds must be between 0 and 3600")
+	}
+	if c.Providers.Ollama.TimeoutSeconds <= 0 || c.Providers.Ollama.TimeoutSeconds > 1_800 {
+		return errors.New("providers.ollama.timeout_seconds must be between 1 and 1800")
+	}
 	if c.Review.TimeoutSeconds <= 0 || c.Review.KillGraceSeconds <= 0 || c.Review.BatchBytes <= 0 {
 		return errors.New("all review limits must be positive")
+	}
+	if len(c.Review.Phases) == 0 || len(c.Review.Phases) > 3 {
+		return errors.New("review.phases must select at least one of recipe, sources, or artifact")
+	}
+	if c.Review.IncludeRecipePhase {
+		return errors.New("review.include_recipe_phase is legacy input; use review.phases")
+	}
+	seenPhases := map[string]bool{}
+	for _, phase := range c.Review.Phases {
+		if (phase != "recipe" && phase != "sources" && phase != "artifact") || seenPhases[phase] {
+			return fmt.Errorf("review.phases contains unsupported or duplicate phase %q", phase)
+		}
+		seenPhases[phase] = true
 	}
 	limits := []int64{
 		c.Limits.MaxDispatchBytes, int64(c.Limits.MaxFiles), c.Limits.MaxTotalInputBytes, int64(c.Limits.MaxArchives),
@@ -378,6 +470,24 @@ func decisionSeverityLabel(minimum string) string {
 func validEffort(value string) bool {
 	switch value {
 	case "none", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+
+func validOllamaReasoning(value string) bool {
+	switch value {
+	case "auto", "off", "low", "medium", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+func validOllamaEffectiveReasoning(value string) bool {
+	switch value {
+	case "on", "off", "low", "medium", "high":
 		return true
 	default:
 		return false

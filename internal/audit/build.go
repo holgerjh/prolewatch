@@ -756,7 +756,14 @@ func RunMakepkg(ctx context.Context, args []string) int {
 		}
 		fmt.Fprintln(os.Stderr, renderer.phaseResult(refreshed, status, mode != "" && interactiveDecisionAvailable(), status == 0))
 		if status != 0 {
-			if mode != "" && confirmInlineDecision(mode, refreshed, nil, workdir, cfg.Review.ManualReviewMinimumSeverity) {
+			reviewNow := makeOnDemandAIReview(ctx, service, &refreshed, &status, renderer,
+				func() (*Report, int, error) {
+					return service.reviewDirectoryNow(ctx, "post", workdir, report.PackageBase, report.YayContext)
+				},
+				func(next *Report, nextStatus int, prompt bool) string {
+					return renderer.phaseResult(next, nextStatus, prompt, false)
+				})
+			if mode != "" && confirmInlineDecisionWithReview(mode, refreshed, nil, workdir, cfg.Review.ManualReviewMinimumSeverity, reviewNow) {
 				fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(refreshed.PackageBase, 4096)+" / "+phaseName(refreshed.Phase)+" against the exact snapshot"))
 				progressTimedStage(ctx, StageDecisionValidation, cfg.Limits.ScanTimeoutSeconds)
 				tokenPath, err := createInlineToken(mode, refreshed, service.Approvals)
@@ -1928,7 +1935,14 @@ func auditAndBind(ctx context.Context, packages []string, postReport *Report, se
 	fmt.Fprintln(os.Stderr, renderer.reportWithPrompt(artifact, artifactMode != "" && interactiveDecisionAvailable()))
 	if status != 0 {
 		mode := artifactMode
-		if mode != "" && confirmInlineDecision(mode, artifact, nil, "", service.Config.Review.ManualReviewMinimumSeverity) {
+		reviewNow := makeOnDemandAIReview(ctx, service, &artifact, &status, renderer,
+			func() (*Report, int, error) {
+				return service.reviewArtifactsNow(ctx, packages, postReport.PackageBase)
+			},
+			func(next *Report, _ int, prompt bool) string {
+				return renderer.reportWithPrompt(next, prompt)
+			})
+		if mode != "" && confirmInlineDecisionWithReview(mode, artifact, nil, "", service.Config.Review.ManualReviewMinimumSeverity, reviewNow) {
 			fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(artifact.PackageBase, 4096)+" / "+phaseName(artifact.Phase)+" against the exact snapshot"))
 			progressTimedStage(ctx, StageDecisionValidation, service.Config.Limits.ScanTimeoutSeconds)
 			tokenPath, err := createInlineToken(mode, artifact, service.Approvals)

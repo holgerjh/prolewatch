@@ -29,6 +29,7 @@
           "severity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"] },
           "category": {
             "type": "string",
+            "description": "Classify a cross-file chain by its end security impact; bind the finding itself to the concrete dangerous consumer or sink.",
             "enum": [
               "archive_escape", "build_hook", "coverage", "credential_access",
               "decode_execute", "filesystem", "integrity", "network",
@@ -38,8 +39,15 @@
             ]
           },
           "file": { "type": "string" },
-          "line": { "type": ["integer", "null"], "minimum": 1 },
-          "evidence": { "type": "string" },
+          "line": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "Exact one-based original-file line containing the quoted evidence and dangerous operation, never a neighboring setup or closing line."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Short exact excerpt from the selected line at file and line."
+          },
           "rationale": { "type": "string" }
         }
       }

@@ -313,6 +313,14 @@ func TestAIReviewStatusDistinguishesUnavailableAndSkippedRuns(t *testing.T) {
 			role: "amber",
 		},
 		{
+			name: "unavailable Ollama",
+			report: &Report{Reviewer: ReviewerReport{
+				Mode: ReviewModeAI, Provider: "ollama", Model: "local", Error: "provider attestation is stale",
+			}},
+			want: "disabled for this run · ollama/local · provider attestation is stale · deterministic findings only · run 'prolewatch doctor --probe-llm-quality'",
+			role: "amber",
+		},
+		{
 			name:   "structural stop",
 			report: &Report{Reviewer: ReviewerReport{Mode: ReviewModeAI}},
 			want:   "not run · structural finding already stopped this phase",
@@ -564,11 +572,11 @@ func TestTerminalProgressUsesRealCountersBatchesAndDeadline(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	p := &terminalProgress{
 		renderer: terminalRendererWithCapabilities(&bytes.Buffer{}, terminalCapabilities{Interactive: true, Unicode: true}),
-		package_: "demo", phase: "pre", stage: StageAIReview, batch: 2, batches: 3, reviewTrigger: reviewTriggerDecisionFindings,
+		package_: "demo", phase: "pre", stage: StageAIReview, batch: 2, batches: 3, reviewTrigger: reviewTriggerOnDemand,
 		deadline: now.Add(90 * time.Second), scan: brief.ScanProgress{FilesSeen: 42, BytesSeen: 2048, ArchivesSeen: 2, ArchiveEntries: 7, ArchiveUnpackedBytes: 8192}, now: func() time.Time { return now },
 	}
 	line := p.lineLocked(now)
-	for _, want := range []string{"demo/pre", "AI review (triggered by findings)", "batch 2/3", "42 files", "2.0 KiB input", "2 archives", "7 entries", "8.0 KiB unpacked", "deadline 1m30s"} {
+	for _, want := range []string{"demo/pre", "AI review", "batch 2/3", "42 files", "2.0 KiB input", "2 archives", "7 entries", "8.0 KiB unpacked", "deadline 1m30s"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("progress line is missing %q: %q", want, line)
 		}
@@ -722,7 +730,7 @@ func TestTerminalProgressLifecycle(t *testing.T) {
 	}
 	progressTimedStage(ctx, StageDeterministicScan, 30)
 	progressScan(ctx, brief.ScanProgress{Operation: brief.ScanOperationInventory, FilesSeen: 3, BytesSeen: 1024})
-	progressAI(ctx, 1, 2, 60, reviewTriggerDecisionFindings)
+	progressAI(ctx, 1, 2, 60, reviewTriggerOnDemand)
 	progressAcquisition(ctx, egress.AcquisitionProgress{Filename: "source.tar", SourceIndex: 1, SourceCount: 1, Bytes: 10, Total: 20})
 	progressActivity(ctx, "cloning source")
 	progress.SetPackage("renamed")
@@ -773,6 +781,39 @@ func TestTerminalProgressLifecycle(t *testing.T) {
 		if got := humanBytes(value); got != want {
 			t.Fatalf("humanBytes(%d)=%q, want %q", value, got, want)
 		}
+	}
+}
+
+func TestTerminalProgressReleasesTheLiveLineOnCancellation(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminalRendererWithCapabilities(&output, terminalCapabilities{Interactive: true, Unicode: true})
+	progress := newTerminalProgress(renderer, "demo", "pre")
+	if progress == nil {
+		t.Fatal("interactive progress was not created")
+	}
+	defer progress.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = withTerminalProgress(ctx, progress)
+	progressAI(ctx, 1, 1, 300, reviewTriggerOnDemand)
+	cancel()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		progress.mu.Lock()
+		closed, live := progress.closed, progress.liveLine
+		progress.mu.Unlock()
+		if closed && !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled progress retained ownership of the terminal line")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	written := output.String()
+	progressStage(ctx, StageComplete)
+	if got := output.String(); got != written {
+		t.Fatalf("a late progress callback reclaimed the terminal after cancellation: before=%q after=%q", written, got)
 	}
 }
 
@@ -1048,9 +1089,9 @@ func TestProgressStageLabelCapitalisesTheAcronym(t *testing.T) {
 // TestDegradedAIReviewIsAlwaysStatedSomewhere binds where a skipped scan is
 // reported, which is a balance rather than a single rule.
 //
-// The common degradation is persistent, not transient: the policy fingerprint
-// the attestation is bound to includes bsdtar's digest and the provider CLI's
-// version, so an ordinary upgrade disables AI review until doctor is re-run.
+// The common degradation is persistent, not transient: the semantic fingerprint
+// and provider identity bind behavior-shaping changes such as a provider CLI
+// upgrade, so an ordinary upgrade can disable AI review until doctor is re-run.
 // Refusing to collapse those phases printed the same full block once per gate
 // per package, which is how a warning becomes wallpaper. Collapsing them
 // silently would be worse. So: the compact line says it, and the artifact gate

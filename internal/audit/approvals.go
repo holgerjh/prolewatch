@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"github.com/holgerjh/prolewatch/internal/brief"
@@ -213,13 +214,61 @@ func confidenceOnlyBlock(report *Report, cfg Config) bool {
 // When there is no controlling terminal there is nobody to ask, and the
 // briefing prints the command-line instructions instead.
 func confirmInlineDecision(mode string, report *Report, cause error, reviewRoot, minimumSeverity string) bool {
+	return confirmInlineDecisionWithReview(mode, report, cause, reviewRoot, minimumSeverity, nil)
+}
+
+type inlineAIReview func(io.Writer) (string, bool)
+type inlineAIReviewRun func() (*Report, int, error)
+type inlineAIReviewRender func(*Report, int, bool) string
+
+func confirmInlineDecisionWithReview(mode string, report *Report, cause error, reviewRoot, minimumSeverity string, review inlineAIReview) bool {
 	tty, err := openControllingTerminal()
 	if err != nil {
 		return false
 	}
 	defer tty.Close()
-	previews := inlineFindingPreviewActions(report, reviewRoot, minimumSeverity, rendererForWriter(tty))
+	renderer := rendererForWriter(tty)
+	previews := inlineFindingPreviewActions(report, reviewRoot, minimumSeverity, renderer)
+	previews.refresh = func() inlineFindingPreviews {
+		return inlineFindingPreviewActions(report, reviewRoot, minimumSeverity, renderer)
+	}
+	previews.review = review
 	return confirmInlineDecisionInput(mode, report, cause, tty, tty, previews, minimumSeverity)
+}
+
+func makeOnDemandAIReview(ctx context.Context, service *AuditService, report **Report, status *int, renderer terminalRenderer, run inlineAIReviewRun, render inlineAIReviewRender) inlineAIReview {
+	if !onDemandAIReviewAvailable(service, *report) {
+		return nil
+	}
+	target := *report
+	return func(output io.Writer) (string, bool) {
+		fmt.Fprintln(output, renderer.runningLine("AI review requested · rescanning and binding the exact current snapshot"))
+		refreshed, nextStatus, err := run()
+		// The rescan reactivates the transaction's live progress line. Freeze and
+		// clear it before rendering either an error or the refreshed report; its
+		// timer must not overwrite the decision actions while ReadChoice waits.
+		prepareTerminalOutput(ctx)
+		*status = nextStatus
+		if err != nil {
+			if *status == 0 {
+				*status = ExitStateFailure
+			}
+			return renderer.errorLine(err.Error()), false
+		}
+		*target = *refreshed
+		*report = target
+		mode := ""
+		if nextStatus != 0 {
+			mode = classifyInlineDecision(target, service.Config)
+		}
+		keepPrompt := mode != ""
+		return render(target, nextStatus, keepPrompt), keepPrompt
+	}
+}
+
+func onDemandAIReviewAvailable(service *AuditService, report *Report) bool {
+	return service != nil && service.Reviewer != nil && report != nil && report.ApprovalEligible &&
+		report.Reviewer.Mode == ReviewModeAI && report.Reviewer.Error == "" && report.Reviewer.Skipped != "" && len(report.Reviewer.Verdicts) == 0
 }
 
 func inlineFindingPreviewActions(report *Report, reviewRoot, minimumSeverity string, renderer terminalRenderer) inlineFindingPreviews {
@@ -276,6 +325,8 @@ type inlineFindingPreviews struct {
 	decision func() string
 	all      func() string
 	allCount int
+	review   inlineAIReview
+	refresh  func() inlineFindingPreviews
 }
 
 func confirmInlineDecisionInput(mode string, report *Report, cause error, input io.Reader, output io.Writer, previews inlineFindingPreviews, minimumSeverity string) bool {
@@ -293,8 +344,6 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 	}
 
 	renderer := rendererForWriter(output)
-	name := terminalInline(report.PackageBase, 4096)
-	later := "prolewatch approve " + terminalInline(report.ReportID, 4096)
 	reader := bufio.NewReader(input)
 	for {
 		terminal, terminalInput := input.(*safe.PromptTerminal)
@@ -304,7 +353,9 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 			// package-authored fake instruction cannot queue the next decision.
 			terminal.Discard()
 		}
-		writeInlineDecisionPrompt(renderer, output, name, reason, later, previews.decision != nil, previews.allCount, minimumSeverity)
+		name := terminalInline(report.PackageBase, 4096)
+		later := "prolewatch approve " + terminalInline(report.ReportID, 4096)
+		writeInlineDecisionPrompt(renderer, output, name, reason, later, previews.decision != nil, previews.review != nil, previews.allCount, minimumSeverity)
 
 		choice := byte('n')
 		if terminalInput {
@@ -314,6 +365,9 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 			}
 			if previews.all != nil {
 				choices += "a"
+			}
+			if previews.review != nil {
+				choices += "r"
 			}
 			selected, err := terminal.ReadChoice(0, choices, 'n')
 			if err != nil {
@@ -330,6 +384,8 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 				choice = 'i'
 			case "a", "all":
 				choice = 'a'
+			case "r", "review":
+				choice = 'r'
 			}
 		}
 		switch choice {
@@ -349,13 +405,29 @@ func confirmInlineDecisionInput(mode string, report *Report, cause error, input 
 				continue
 			}
 			return false
+		case 'r':
+			if previews.review != nil {
+				fmt.Fprintln(output)
+				result, keepPrompt := previews.review(output)
+				if result != "" {
+					fmt.Fprintln(output, result)
+				}
+				previews.review = nil
+				if keepPrompt {
+					if previews.refresh != nil {
+						previews = previews.refresh()
+					}
+					continue
+				}
+			}
+			return false
 		default:
 			return false
 		}
 	}
 }
 
-func writeInlineDecisionPrompt(renderer terminalRenderer, output io.Writer, name, reason, later string, preview bool, allCount int, minimumSeverity string) {
+func writeInlineDecisionPrompt(renderer terminalRenderer, output io.Writer, name, reason, later string, preview, review bool, allCount int, minimumSeverity string) {
 	actions := []string{}
 	if preview {
 		actions = append(actions, "[i] Inspect "+decisionSeverityLabel(minimumSeverity)+" findings")
@@ -366,6 +438,9 @@ func writeInlineDecisionPrompt(renderer terminalRenderer, output io.Writer, name
 			label = "finding"
 		}
 		actions = append(actions, fmt.Sprintf("[a] Inspect all %d %s", allCount, label))
+	}
+	if review {
+		actions = append(actions, "[r] Run AI review now")
 	}
 	// Spell out the decision actions just like the inspection actions. The
 	// uppercase N communicates that Enter still takes the safe default.

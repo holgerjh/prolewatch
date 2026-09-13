@@ -143,9 +143,9 @@ direction. It was invisible while recognition findings were still hard blocks.
 malformed response, a missing credential, a failed identity check, or a missing
 attestation produces a briefing with no AI section and a line saying why. In the
 attestation case the reviewer is dropped entirely rather than kept with a
-warning: attestation is what binds the provider binary's identity to the policy,
-so without it nothing establishes that the verdicts came from the configured
-reviewer.
+warning: attestation is what binds the provider identity and behavior-shaping
+inputs, so without it nothing establishes that the verdicts came from the
+configured reviewer.
 
 AI review can add contextual judgement across files and may recognise intent
 that no narrow rule describes. It is still not a proof of safety, a malware

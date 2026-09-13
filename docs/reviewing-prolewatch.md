@@ -59,7 +59,7 @@ alongside an implementation shares that implementation's blind spots.
 make scenarios
 ```
 
-Nine deterministic scenarios drawn from real AUR incident classes, each
+Ten deterministic scenarios drawn from real AUR incident classes, each
 asserting a decision and whether an approval could cross it. Read
 [`docs/security-scenarios.md`](security-scenarios.md) for what each one claims:
 they verify declared synthetic inputs, not an entire attack family.

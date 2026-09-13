@@ -14,15 +14,19 @@ import (
 )
 
 type ReviewerReport struct {
-	Mode              string `json:"mode"`
-	MinimumConfidence string `json:"minimum_confidence,omitempty"`
-	Provider          string `json:"provider,omitempty"`
-	Transport         string `json:"transport,omitempty"`
-	RuntimeVersion    string `json:"runtime_version,omitempty"`
-	Model             string `json:"model,omitempty"`
-	Effort            string `json:"effort,omitempty"`
-	AdapterPolicy     string `json:"adapter_policy,omitempty"`
-	Error             string `json:"error,omitempty"`
+	Mode              string   `json:"mode"`
+	Phases            []string `json:"phases,omitempty"`
+	MinimumConfidence string   `json:"minimum_confidence,omitempty"`
+	Provider          string   `json:"provider,omitempty"`
+	Transport         string   `json:"transport,omitempty"`
+	RuntimeVersion    string   `json:"runtime_version,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	ModelDigest       string   `json:"model_digest,omitempty"`
+	ContextTokens     int      `json:"context_tokens,omitempty"`
+	Thinking          bool     `json:"thinking,omitempty"`
+	Effort            string   `json:"effort,omitempty"`
+	AdapterPolicy     string   `json:"adapter_policy,omitempty"`
+	Error             string   `json:"error,omitempty"`
 	// Trigger records why an otherwise optional recipe review ran.
 	Trigger string `json:"trigger,omitempty"`
 	// Skipped is why review did not run when nothing went wrong. Kept apart
@@ -144,17 +148,24 @@ func (r Report) Validate() error {
 	// AI and deterministic-only reports have disjoint provenance shapes. Empty
 	// provider fields in deterministic-only mode are part of that assertion.
 	if r.Reviewer.Mode == ReviewModeAI {
+		if err := validateReportedReviewPhases(r.Reviewer.Phases); err != nil {
+			return err
+		}
 		if !validConfidence(r.Reviewer.MinimumConfidence) {
 			return errors.New("invalid report minimum confidence")
 		}
-		if r.Reviewer.Transport != "cli" || (r.Reviewer.Provider != "codex" && r.Reviewer.Provider != "anthropic") || r.Reviewer.RuntimeVersion == "" || r.Reviewer.Model == "" || !validEffort(r.Reviewer.Effort) || r.Reviewer.AdapterPolicy == "" || len(r.Reviewer.Error) > 8192 {
+		cli := r.Reviewer.Transport == "cli" && (r.Reviewer.Provider == "codex" || r.Reviewer.Provider == "anthropic") && r.Reviewer.ModelDigest == "" && r.Reviewer.ContextTokens == 0 && !r.Reviewer.Thinking && validEffort(r.Reviewer.Effort)
+		ollama := r.Reviewer.Transport == "http-loopback" && r.Reviewer.Provider == "ollama" && validHexDigest(r.Reviewer.ModelDigest) && r.Reviewer.ContextTokens >= 16_384 && (validOllamaEffectiveReasoning(r.Reviewer.Effort) || r.Reviewer.Effort == "none")
+		ollamaUnavailable := r.Reviewer.Transport == "http-loopback" && r.Reviewer.Provider == "ollama" && r.Reviewer.RuntimeVersion == "unavailable" &&
+			r.Reviewer.ModelDigest == "" && r.Reviewer.ContextTokens >= 16_384 && !r.Reviewer.Thinking && (r.Reviewer.Effort == "none" || validOllamaReasoning(r.Reviewer.Effort)) && r.Reviewer.AdapterPolicy == "unavailable" && r.Reviewer.Error != ""
+		if (!cli && !ollama && !ollamaUnavailable) || r.Reviewer.RuntimeVersion == "" || r.Reviewer.Model == "" || r.Reviewer.AdapterPolicy == "" || len(r.Reviewer.Error) > 8192 {
 			return errors.New("invalid report reviewer metadata")
 		}
-		if r.Reviewer.Trigger != "" && r.Reviewer.Trigger != reviewTriggerDecisionFindings {
+		if r.Reviewer.Trigger != "" && r.Reviewer.Trigger != reviewTriggerOnDemand {
 			return errors.New("invalid report reviewer trigger")
 		}
 	} else if r.Reviewer.Mode == ReviewModeDeterministicOnly {
-		if r.Reviewer.MinimumConfidence != "" || r.Reviewer.Provider != "" || r.Reviewer.Transport != "" || r.Reviewer.RuntimeVersion != "" || r.Reviewer.Model != "" || r.Reviewer.Effort != "" || r.Reviewer.AdapterPolicy != "" || r.Reviewer.Error != "" || r.Reviewer.Trigger != "" || len(r.Reviewer.Verdicts) != 0 {
+		if len(r.Reviewer.Phases) != 0 || r.Reviewer.MinimumConfidence != "" || r.Reviewer.Provider != "" || r.Reviewer.Transport != "" || r.Reviewer.RuntimeVersion != "" || r.Reviewer.Model != "" || r.Reviewer.ModelDigest != "" || r.Reviewer.ContextTokens != 0 || r.Reviewer.Thinking || r.Reviewer.Effort != "" || r.Reviewer.AdapterPolicy != "" || r.Reviewer.Error != "" || r.Reviewer.Trigger != "" || len(r.Reviewer.Verdicts) != 0 {
 			return errors.New("deterministic-only report contains AI reviewer metadata")
 		}
 	} else {
@@ -634,7 +645,11 @@ func renderReportText(report *Report, promptFollows bool) string {
 	lines = append(lines, fmt.Sprintf("Coverage: %d files / %s / %s", report.Coverage.FilesSeen, humanBytes(report.Coverage.BytesSeen), selection))
 	lines = append(lines, "Review mode: "+terminalInline(report.Reviewer.Mode, 100))
 	if report.Reviewer.Mode == ReviewModeAI {
+		lines = append(lines, "Review phases: "+terminalInline(strings.Join(report.Reviewer.Phases, ", "), 100))
 		lines = append(lines, "Reviewer: "+terminalInline(report.Reviewer.Provider, 100)+" / "+terminalInline(report.Reviewer.Model, 256))
+		if report.Reviewer.ModelDigest != "" {
+			lines = append(lines, fmt.Sprintf("Local model: sha256:%s / %d context tokens / thinking=%t / %s", report.Reviewer.ModelDigest, report.Reviewer.ContextTokens, report.Reviewer.Thinking, report.Reviewer.Transport))
+		}
 		lines = append(lines, "Minimum confidence: "+terminalInline(report.Reviewer.MinimumConfidence, 20))
 		if lowest := lowestVerdictConfidence(report.Reviewer.Verdicts); lowest != "" {
 			lines = append(lines, "AI confidence: "+lowest)
@@ -650,6 +665,20 @@ func renderReportText(report *Report, promptFollows bool) string {
 	}
 	lines = append(lines, reportLine, "Content SHA-256: "+content)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func validateReportedReviewPhases(phases []string) error {
+	if len(phases) == 0 || len(phases) > 3 {
+		return errors.New("invalid reported review phases")
+	}
+	seen := map[string]bool{}
+	for _, phase := range phases {
+		if (phase != "recipe" && phase != "sources" && phase != "artifact") || seen[phase] {
+			return errors.New("invalid reported review phases")
+		}
+		seen[phase] = true
+	}
+	return nil
 }
 
 // aiSelectionSummary distinguishes review input prepared by the scanner from

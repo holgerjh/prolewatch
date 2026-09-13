@@ -15,11 +15,11 @@ usr/bin/prolewatch
 usr/bin/prolewatch-makepkg
 usr/bin/prolewatch-gpg
 usr/bin/prolewatch-net
-usr/share/prolewatch/default-config.json
+usr/share/prolewatch/default-config.yaml
 usr/share/prolewatch/prolewatch.lua
 usr/share/prolewatch/review-prompt.md
 usr/share/prolewatch/verdict.schema.json
-etc/prolewatch/config.json
+etc/prolewatch/config.yaml
 usr/share/doc/prolewatch/docs/ai-review.md
 `
 

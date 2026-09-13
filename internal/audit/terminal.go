@@ -741,9 +741,9 @@ func (r terminalRenderer) phaseResult(report *Report, status int, promptFollows,
 //
 // A degraded phase still collapses, but never silently: compactReport carries
 // the degradation on its one line. The reason is that the common degradation is
-// persistent, not transient - the policy fingerprint the provider attestation
-// is bound to includes bsdtar's digest and the provider CLI's version, so an
-// ordinary `pacman -Syu` disables AI review until doctor is re-run. Refusing to
+// persistent, not transient - the semantic fingerprint and provider identity
+// bind behavior-shaping changes such as a provider CLI upgrade, so an ordinary
+// `pacman -Syu` can disable AI review until doctor is re-run. Refusing to
 // collapse those phases meant a ten-package transaction printed thirty full
 // blocks saying the same thing, which is how a warning becomes wallpaper. The
 // artifact gate never collapses, so the full reason is still stated once per
@@ -768,15 +768,16 @@ func (r terminalRenderer) compactReport(report *Report, handoff bool) string {
 	// this line's whole purpose is being one line, and because the artifact gate
 	// renders in full and carries the reason.
 	degraded := ""
+	recoveryCommand := aiReviewRecoveryCommand(report.Reviewer.Provider)
 	if report.Reviewer.Error != "" {
-		degraded = "AI review off · run 'prolewatch doctor'"
+		degraded = "AI review off · run '" + recoveryCommand + "'"
 	}
 	name := terminalInline(report.PackageBase, 4096)
 	if !r.enabled() {
 		line := fmt.Sprintf("%s / %s: no blocking findings; %s; report %s",
 			name, terminalInline(report.Phase, 100), context, terminalInline(report.ReportID, 4096))
 		if degraded != "" {
-			line += "; AI review off, run 'prolewatch doctor'"
+			line += "; AI review off, run '" + recoveryCommand + "'"
 		}
 		return line
 	}
@@ -829,7 +830,7 @@ func aiReviewStatus(report *Report, divider string) (string, string) {
 		if cause := strings.TrimSpace(strings.SplitN(report.Reviewer.Error, ";", 2)[0]); cause != "" {
 			parts = append(parts, terminalInline(cause, 200))
 		}
-		parts = append(parts, "deterministic findings only", "run 'prolewatch doctor'")
+		parts = append(parts, "deterministic findings only", "run '"+aiReviewRecoveryCommand(report.Reviewer.Provider)+"'")
 		return strings.Join(parts, divider), "amber"
 	}
 	if len(report.Reviewer.Verdicts) == 0 {
@@ -844,8 +845,8 @@ func aiReviewStatus(report *Report, divider string) (string, string) {
 	}
 
 	parts := []string{"completed"}
-	if report.Reviewer.Trigger == reviewTriggerDecisionFindings {
-		parts = append(parts, "triggered by findings")
+	if report.Reviewer.Trigger == reviewTriggerOnDemand {
+		parts = append(parts, "requested interactively")
 	}
 	if identity != "" {
 		parts = append(parts, identity)
@@ -898,6 +899,13 @@ func aiReviewStatus(report *Report, divider string) (string, string) {
 		parts = append(parts, "confidence "+terminalInline(lowest, 20))
 	}
 	return strings.Join(parts, divider), statusRole
+}
+
+func aiReviewRecoveryCommand(provider string) string {
+	if provider == "ollama" {
+		return "prolewatch doctor --probe-llm-quality"
+	}
+	return "prolewatch doctor"
 }
 
 func reportGuidanceCount(report *Report) int {
@@ -1054,11 +1062,12 @@ func (r terminalRenderer) checkLine(check Check) string {
 		// property of the whole set and not of one check.
 		return plainCheckLine(check)
 	}
-	checkLabel, checkRole, marker := "FAIL", "red", r.anchor()
-	if check.OK {
-		checkLabel, checkRole, marker = "OK", "green", r.bullet()
-	} else if !check.Required {
-		checkLabel, checkRole = "WARN", "amber"
+	checkLabel, checkRole, marker := checkResultLabel(check), "red", r.anchor()
+	switch checkLabel {
+	case "OK":
+		checkRole, marker = "green", r.bullet()
+	case "WARN":
+		checkRole = "amber"
 	}
 	line := r.paint(checkRole, marker+" ["+checkLabel+"]") + " " + terminalInline(check.Name, 200)
 	if check.Detail != "" {
@@ -1167,6 +1176,7 @@ type terminalProgress struct {
 	suspended     bool
 	dirty         bool
 	liveLine      bool
+	cancelWatch   sync.Once
 }
 
 // A live status owns only the terminal's current physical line. Carriage
@@ -1348,9 +1358,6 @@ func stageLabel(stage string) string {
 
 func (p *terminalProgress) lineLocked(now time.Time) string {
 	stage := stageLabel(p.stage)
-	if p.stage == StageAIReview && p.reviewTrigger == reviewTriggerDecisionFindings {
-		stage += " (triggered by findings)"
-	}
 	parts := []string{p.renderer.paint("amber", p.renderer.bullet()) + " " + p.renderer.paint("bold", "GUARD")}
 	if p.package_ != "" {
 		label := p.package_
@@ -1625,6 +1632,21 @@ type terminalProgressContextKey struct{}
 func withTerminalProgress(ctx context.Context, progress *terminalProgress) context.Context {
 	if progress == nil {
 		return ctx
+	}
+	// The program-level context is cancelled by SIGINT/SIGTERM. A live line is
+	// terminal ownership, so release it immediately rather than waiting for a
+	// provider's bounded cleanup to return. Close is permanent: later progress
+	// callbacks from the unwinding operation must not reclaim the shell's line.
+	if ctx != nil && ctx.Done() != nil && progress.stop != nil {
+		progress.cancelWatch.Do(func() {
+			go func() {
+				select {
+				case <-ctx.Done():
+					progress.Close()
+				case <-progress.stop:
+				}
+			}()
+		})
 	}
 	return context.WithValue(ctx, terminalProgressContextKey{}, progress)
 }

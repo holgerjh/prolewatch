@@ -9,10 +9,11 @@ especially important.
 
 ## Supported versions
 
-`0.11.0` is the first public release and is experimental. Security fixes are
-made against the current default branch; older checkouts may no longer match
-the documented security boundary, though reports remain useful when the
-behavior also reproduces on current code.
+There is no public release yet. The current tree targets `0.12.0` as the first
+public experimental release. Security fixes are made against the current
+default branch; older checkouts may no longer match the documented security
+boundary, though reports remain useful when the behavior also reproduces on
+current code.
 
 ## How this release is distributed, and where the trust decision is
 
@@ -86,17 +87,18 @@ currently guaranteed.
 
 ## Open findings
 
-- Assessment date: 2026-08-29
-- Applies to: `0.11.0`, the first public release
+- Assessment date: 2026-09-10
+- Release-candidate commit: pending selection after the concurrent release work
+- Applies to: the tree targeting `0.12.0` as the first public experimental release
 
 Prolewatch installs no privileged component: no daemon, socket, service
 account, `sudoers` entry, or setuid binary. That removes the class of finding
 this section used to track, and changes what a serious report looks like.
 
-Configuration compatibility starts with this release. `0.11.0` intentionally
-carries no migration parser or legacy hook namespace; an obsolete local
-configuration fails strict validation and should be replaced with the shipped
-default.
+Configuration compatibility starts with the first public release. The current
+`0.12.0` prerelease tree intentionally carries no migration parser or legacy
+hook namespace; an obsolete local configuration fails strict validation and
+should be replaced with the shipped default.
 
 The current residual areas, without operational attack instructions:
 

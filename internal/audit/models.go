@@ -20,7 +20,7 @@ const (
 	VerdictSchemaVersion          = 3
 	findingGuidanceLimit          = 12
 	findingGuidanceTextLimit      = 2048
-	reviewTriggerDecisionFindings = "decision-findings"
+	reviewTriggerOnDemand         = "on-demand"
 )
 
 // FindingGuidance is advisory context for a deterministic finding at the

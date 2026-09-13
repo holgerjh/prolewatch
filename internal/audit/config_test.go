@@ -18,12 +18,12 @@ func TestDefaultConfigAndStrictLoading(t *testing.T) {
 	if cfg.Provider != "codex" || cfg.ActiveProvider().Model == "" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.Review.MinimumConfidence != "high" || cfg.Review.ManualReviewMinimumSeverity != "high" || !cfg.Review.GuideDecisionFindings || cfg.Vendor.ScanDepth != 0 || cfg.Network.Mode != "prompt" ||
+	if cfg.Review.MinimumConfidence != "high" || cfg.Review.ManualReviewMinimumSeverity != "high" || cfg.Vendor.ScanDepth != 0 || cfg.Network.Mode != "prompt" ||
 		cfg.Network.GrantScope != "transaction" || cfg.Terminal.Style != TerminalStyleBrand {
 		t.Fatalf("unexpected policy defaults: %+v", cfg)
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(`{"provider":"codex","providers":{"codex":{"model":"gpt","effort":"high"},"anthropic":{"model":"sonnet","effort":"high"}},"review":{"timeout_seconds":1,"kill_grace_seconds":1,"batch_bytes":1024},"limits":{"max_dispatch_bytes":2048,"max_archive_entries":1,"max_archive_unpacked_bytes":2048,"max_archive_depth":1,"max_text_per_file":1024,"max_selected_text_bytes":1024,"binary_strings_bytes":128},"extra":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestDefaultConfigAndStrictLoading(t *testing.T) {
 }
 
 func TestShippedConfigMatchesCompiledDefaults(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("..", "..", "share", "default-config.json"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "share", "default-config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,8 @@ func TestShippedConfigMatchesCompiledDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cfg Config
-	if err := safe.DecodeJSON(raw, &cfg); err != nil {
+	cfg, err = decodeConfigYAML(raw)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -50,6 +51,14 @@ func TestShippedConfigMatchesCompiledDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg, DefaultConfig()) {
 		t.Fatalf("shipped defaults drifted from compiled policy: %#v", cfg)
+	}
+	if !strings.Contains(string(raw[:min(len(raw), 256)]), "# IMPORTANT: AI REVIEW NEEDS A VALID QUALITY ATTESTATION") {
+		t.Fatal("shipped YAML does not prominently explain AI quality attestation")
+	}
+	for _, fragment := range []string{"prolewatch doctor --probe-llm-quality", "false sense of security", "review.mode: 'deterministic-only'"} {
+		if !strings.Contains(string(raw), fragment) {
+			t.Fatalf("shipped YAML omitted attestation guidance %q", fragment)
+		}
 	}
 }
 
@@ -96,6 +105,153 @@ func TestConfigValidatesActiveProviderAndLimits(t *testing.T) {
 	}
 }
 
+func TestOllamaConfigRequiresMeasuredContextAndAllowsImmediateUnload(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider = "ollama"
+	cfg.Providers.Ollama.Model = "gpt-oss:20b"
+	cfg.Providers.Ollama.ContextTokens = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "context_tokens") {
+		t.Fatalf("active Ollama accepted an unmeasured context: %v", err)
+	}
+	cfg.Providers.Ollama.ContextTokens = 16_384
+	zero := 0
+	cfg.Providers.Ollama.KeepAliveSeconds = &zero
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("minimum measured context with immediate unload was rejected: %v", err)
+	}
+	if cfg.ActiveProvider() != (ProviderConfig{Model: "gpt-oss:20b", Effort: "off"}) || cfg.OllamaKeepAliveSeconds() != 0 {
+		t.Fatalf("unexpected active Ollama policy: %+v", cfg)
+	}
+	cfg.Providers.Ollama.ContextTokens--
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("context below the technical minimum was accepted")
+	}
+}
+
+func TestOllamaReasoningDefaultsAndRejectsUnknownValues(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Providers.Ollama.Reasoning != "off" {
+		t.Fatalf("default reasoning=%q", cfg.Providers.Ollama.Reasoning)
+	}
+	cfg.Provider = "ollama"
+	cfg.Providers.Ollama.Model = "qwen3:14b"
+	cfg.Providers.Ollama.ContextTokens = 40_960
+	for _, level := range []string{"auto", "off", "low", "medium", "high"} {
+		cfg.Providers.Ollama.Reasoning = level
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("reasoning=%s rejected: %v", level, err)
+		}
+	}
+	cfg.Providers.Ollama.Reasoning = "turbo"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "providers.ollama.reasoning") {
+		t.Fatalf("unknown reasoning accepted: %v", err)
+	}
+	cfg.Providers.Ollama.Reasoning = ""
+	raw, err := safe.CanonicalJSON(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.Providers.Ollama.Reasoning != "off" {
+		t.Fatalf("configuration did not use the compiled reasoning default: reasoning=%q err=%v", loaded.Providers.Ollama.Reasoning, err)
+	}
+}
+
+func TestLegacyRecipeSelectionNormalizesToExplicitPhases(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Review.Phases = nil
+	cfg.Review.IncludeRecipePhase = true
+	raw, err := safe.CanonicalJSON(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"pre", "post", "artifact"} {
+		if !loaded.ReviewPhaseEnabled(phase) {
+			t.Errorf("legacy include_recipe_phase did not enable %s: %#v", phase, loaded.Review.Phases)
+		}
+	}
+	if loaded.Review.IncludeRecipePhase {
+		t.Fatal("legacy field survived configuration normalization")
+	}
+	direct := DefaultConfig()
+	direct.Review.IncludeRecipePhase = true
+	if err := direct.Validate(); err == nil || !strings.Contains(err.Error(), "legacy input") {
+		t.Fatalf("post-migration legacy field was not rejected: %v", err)
+	}
+}
+
+func TestRemovedFindingGuidanceOptionIsRejected(t *testing.T) {
+	cfg := DefaultConfig()
+	raw, err := safe.CanonicalJSON(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["review"].(map[string]any)["guide_decision_findings"] = true
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown field \"guide_decision_findings\"") {
+		t.Fatalf("removed finding-guidance option was accepted: %v", err)
+	}
+}
+
+func TestRemovedFindingTriggeredPhasesOptionIsRejected(t *testing.T) {
+	cfg := DefaultConfig()
+	raw, err := safe.CanonicalJSON(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["review"].(map[string]any)["finding_triggered_phases"] = []string{"recipe"}
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown field \"finding_triggered_phases\"") {
+		t.Fatalf("removed finding-triggered option was accepted: %v", err)
+	}
+}
+
+func TestReviewPhaseSelection(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Review.Phases = []string{"recipe", "artifact"}
+	if !cfg.ReviewPhaseEnabled("pre") || cfg.ReviewPhaseEnabled("post") || !cfg.ReviewPhaseEnabled("artifact") {
+		t.Fatalf("unexpected phase selection: %#v", cfg.Review.Phases)
+	}
+	cfg.Review.Phases = []string{"artifact", "artifact"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("duplicate review phase was accepted")
+	}
+}
+
 func TestConfigWithoutTerminalStyleLoadsAsBrand(t *testing.T) {
 	cfg := DefaultConfig()
 	raw, err := safe.CanonicalJSON(cfg)
@@ -103,7 +259,7 @@ func TestConfigWithoutTerminalStyleLoadsAsBrand(t *testing.T) {
 		t.Fatal(err)
 	}
 	withoutTerminal := strings.Replace(string(raw), `,"terminal":{"style":"brand"}`, "", 1)
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(withoutTerminal), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +294,7 @@ func TestRetiredPolicyFieldsAreRejected(t *testing.T) {
 		`{"sandbox":{"read_only_paths":["/usr/share"]}}`,
 		`{"review":{"guide_high_recipe_findings":true}}`,
 	} {
-		path := filepath.Join(t.TempDir(), "config.json")
+		path := filepath.Join(t.TempDir(), "config.yaml")
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +309,7 @@ func TestTerminalStyleConfigCLISelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +360,7 @@ func TestConfigRejectsEverySecurityBudgetClass(t *testing.T) {
 
 func TestConfigRejectsTrailingJSON(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	path := filepath.Join(dir, "config.yaml")
 	raw := []byte(`{"provider":"codex"} {"provider":"anthropic"}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
@@ -216,7 +372,7 @@ func TestConfigRejectsTrailingJSON(t *testing.T) {
 
 func TestConfigRejectsWritableOrLinkedFiles(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(`{}`), 0o666); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +399,7 @@ func TestConfigRejectsWritableOrLinkedFiles(t *testing.T) {
 // crosses one.
 func TestGlobalUnsafeOverrideCannotBeReintroducedByConfiguration(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	path := filepath.Join(dir, "config.yaml")
 	raw, err := json.Marshal(DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -296,6 +452,9 @@ func TestReviewerDefaultsAreDeliberate(t *testing.T) {
 	}
 	if cfg.Providers.Anthropic.Model != "sonnet" || cfg.Providers.Anthropic.Effort != "high" {
 		t.Fatalf("anthropic defaults changed: %+v", cfg.Providers.Anthropic)
+	}
+	if cfg.Providers.Ollama.Model != "qwen3:14b" || cfg.Providers.Ollama.ContextTokens != 40_960 || cfg.Providers.Ollama.Reasoning != "off" {
+		t.Fatalf("Ollama example default changed: %+v", cfg.Providers.Ollama)
 	}
 	// The whole reason the defaults above are tolerable: nothing contacts a
 	// provider unless the user turns review on.
@@ -410,5 +569,22 @@ func TestDocumentedCodexVersionRangeMatchesTheCode(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(strings.Fields(guide), " "), "not searched for on `PATH`") {
 		t.Error("AI review guide no longer warns that the Codex path is not resolved through PATH")
+	}
+}
+
+func TestDocumentedOllamaPilotContractMatchesTheCode(t *testing.T) {
+	path, err := filepath.Abs(filepath.Join("..", "..", "docs", "ai-review.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := string(raw)
+	for _, value := range []string{MinOllamaVersion, MaxOllamaVersion, ollamaLoopbackEndpoint, "context_tokens", "OLLAMA_NUM_PARALLEL=1", "q8_0"} {
+		if !strings.Contains(guide, value) {
+			t.Errorf("AI review guide does not document Ollama contract value %q", value)
+		}
 	}
 }

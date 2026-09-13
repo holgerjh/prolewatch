@@ -160,7 +160,7 @@ git clone https://aur.archlinux.org/yay-bin.git && (cd yay-bin && makepkg -si)
 # the single most likely reason a fresh install fails, and it surfaces deep
 # inside someone else's package() as an EINVAL from chown
 grep -q "^$(id -un):" /etc/subuid ||
-  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+  sudo usermod --add-subids -- "$(id -un)"
 
 # keep the build off tmpfs: /tmp is RAM-backed and the package's own check()
 # puts TMPDIR inside the build directory

@@ -11,7 +11,7 @@ import (
 // a successful-looking installation that could not do anything.
 //
 // The hook makes every yay transaction call `prolewatch scan`, and scan reads
-// /etc/prolewatch/config.json before it does any work. Writing the hook while
+// /etc/prolewatch/config.yaml before it does any work. Writing the hook while
 // that file is unreadable does not leave the user unprotected - it leaves their
 // package manager unable to install anything, immediately after a branded line
 // saying setup succeeded. Neither command may write the hook in that state.
@@ -19,7 +19,7 @@ func TestSetupAndInstallHookRefuseWithoutAConfiguration(t *testing.T) {
 	yayConfig := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", yayConfig)
 	previous := SystemConfigPath
-	SystemConfigPath = filepath.Join(t.TempDir(), "absent.json")
+	SystemConfigPath = filepath.Join(t.TempDir(), "absent.yaml")
 	defer func() { SystemConfigPath = previous }()
 
 	for _, command := range [][]string{{"setup"}, {"install-hook"}} {
@@ -38,7 +38,7 @@ func TestSetupPreflightsBeforeWritingTheHook(t *testing.T) {
 	withStateAndShare(t)
 	yayConfig := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", yayConfig)
-	configPath := filepath.Join(t.TempDir(), "config.json")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw, err := CanonicalJSON(DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestSetupUndoesTheHookWhenVerificationFails(t *testing.T) {
 	withStateAndShare(t)
 	yayConfig := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", yayConfig)
-	configPath := filepath.Join(t.TempDir(), "config.json")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw, err := CanonicalJSON(DefaultConfig())
 	if err != nil {
 		t.Fatal(err)

@@ -1,9 +1,12 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +30,16 @@ func (a doctorFakeAdapter) CredentialPath() string { return a.credential }
 type doctorActionReviewer struct {
 	metadata ProviderMetadata
 	before   func()
+}
+
+type doctorResetAdapter struct {
+	doctorFakeAdapter
+	resets *int
+}
+
+func (a doctorResetAdapter) resetModel(context.Context) error {
+	(*a.resets)++
+	return nil
 }
 
 func (r doctorActionReviewer) Probe(context.Context) (ProviderMetadata, error) {
@@ -125,11 +138,7 @@ func TestNoProbeDoctorStillValidatesProviderAttestation(t *testing.T) {
 	}
 	codexHostBinary = writeExecutable(t, "echo codex")
 	cfg := aiConfig()
-	archive, err := brief.ArchiveProbeIdentity(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fingerprint, err := ComputePolicyFingerprint(cfg, metadata, archive)
+	fingerprint, err := ComputeProviderAttestationFingerprint(cfg, metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +146,7 @@ func TestNoProbeDoctorStillValidatesProviderAttestation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := saveProviderAttestation(fingerprint, metadata, provider, archive, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
+	if err := saveProviderAttestation(fingerprint, metadata, provider, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -174,6 +183,157 @@ func TestNoProbeDoctorStillValidatesProviderAttestation(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("live doctor emitted %d attestation checks", count)
+	}
+}
+
+func TestOrdinaryOllamaDoctorDoesNotRunLongQualityProbe(t *testing.T) {
+	withStateAndShare(t)
+	previousAdapter, previousReviewer := providerAdapterFactory, reviewClientFactory
+	defer func() {
+		providerAdapterFactory, reviewClientFactory = previousAdapter, previousReviewer
+	}()
+	metadata := ProviderMetadata{
+		Provider: "ollama", Transport: "http-loopback", RuntimeVersion: "ollama 0.32.13",
+		Model: "secure-model:latest", ModelDigest: strings.Repeat("a", 64), ContextTokens: 131072,
+		Thinking: true, Effort: "on", AdapterPolicy: ollamaAdapterPolicy("on", false),
+	}
+	providerAdapterFactory = func(Config) providerAdapter { return doctorFakeAdapter{metadata: metadata} }
+	reviewerCalled := false
+	reviewClientFactory = func(Config) ReviewClient {
+		reviewerCalled = true
+		return &fakeReviewer{}
+	}
+
+	checks := runDoctorStream(context.Background(), ollamaTestConfig(), true, false, "", nil, nil)
+	if reviewerCalled {
+		t.Fatal("ordinary Ollama doctor ran the opt-in quality assessment")
+	}
+	var attestation Check
+	for _, check := range checks {
+		if strings.HasPrefix(check.Name, "Ollama quality ") {
+			t.Fatalf("ordinary Ollama doctor emitted a quality-case result: %+v", check)
+		}
+		if check.Name == "provider semantic attestation" {
+			attestation = check
+		}
+	}
+	if attestation.OK || !attestation.Required || !strings.Contains(attestation.Detail, "prolewatch doctor --probe-llm-quality") {
+		t.Fatalf("missing Ollama attestation did not recommend the explicit quality probe: %+v", attestation)
+	}
+}
+
+func TestOllamaDoctorSlowSourcesAttestsButUnusableMeasurementBlocks(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		phases              []string
+		omitPrefillDuration bool
+		wantMeasured        bool
+		wantAttestation     bool
+		wantGuidance        string
+	}{
+		{name: "slow routine Sources", phases: []string{"sources", "artifact"}, wantMeasured: true, wantAttestation: true, wantGuidance: "suggested review.phases: [artifact]"},
+		{name: "unusable measurement", phases: []string{"sources", "artifact"}, omitPrefillDuration: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withStateAndShare(t)
+			previousConfigPath := SystemConfigPath
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			configContents := []byte("# Doctor must not rewrite this configuration\n")
+			if err := os.WriteFile(configPath, configContents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			SystemConfigPath = configPath
+			t.Cleanup(func() { SystemConfigPath = previousConfigPath })
+			previousAdapter, previousReviewer := providerAdapterFactory, reviewClientFactory
+			t.Cleanup(func() { providerAdapterFactory, reviewClientFactory = previousAdapter, previousReviewer })
+			metadata := ProviderMetadata{
+				Provider: "ollama", Transport: "http-loopback", RuntimeVersion: "ollama 0.32.13",
+				Model: "secure-model:latest", ModelDigest: ollamaTestDigest, ContextTokens: 131072,
+				Thinking: true, Effort: "on", AdapterPolicy: ollamaAdapterPolicy("on", false),
+			}
+			adapter := &llmBenchmarkFakeAdapter{doctorFakeAdapter: doctorFakeAdapter{metadata: metadata}}
+			providerAdapterFactory = func(Config) providerAdapter { return adapter }
+			reviewer := &ollamaQualityReviewer{metadata: metadata, omitPrefillDuration: test.omitPrefillDuration}
+			reviewClientFactory = func(Config) ReviewClient { return reviewer }
+			cfg := ollamaTestConfig()
+			cfg.Review.Phases = test.phases
+			originalPhases := append([]string(nil), cfg.Review.Phases...)
+			checks := runDoctorStream(context.Background(), cfg, true, true, "", nil, nil)
+			actualContents, err := os.ReadFile(configPath)
+			if err != nil || !bytes.Equal(actualContents, configContents) {
+				t.Fatalf("Doctor changed the configuration file: contents=%q err=%v", actualContents, err)
+			}
+			if strings.Join(cfg.Review.Phases, ",") != strings.Join(originalPhases, ",") {
+				t.Fatalf("Doctor changed the configured review phases: before=%v after=%v", originalPhases, cfg.Review.Phases)
+			}
+			var performance, attestation Check
+			var providerChecks []Check
+			for _, check := range checks {
+				if strings.HasPrefix(check.Name, "Ollama quality ") || check.Name == "Ollama refuses over-context input" ||
+					check.Name == "Ollama byte/token calibration" || check.Name == "Ollama measured throughput and sources projection" ||
+					check.Name == "provider semantic attestation" {
+					providerChecks = append(providerChecks, check)
+				}
+				switch check.Name {
+				case "Ollama measured throughput and sources projection":
+					performance = check
+				case "provider semantic attestation":
+					attestation = check
+				}
+			}
+			if reviewer.calls != 7 || adapter.resets != 7 || performance.Name == "" || attestation.Name == "" {
+				t.Fatalf("full quality probe did not run: calls=%d resets=%d performance=%+v attestation=%+v", reviewer.calls, adapter.resets, performance, attestation)
+			}
+			if performance.OK || performance.Required != !test.wantMeasured || attestation.OK != test.wantAttestation ||
+				DoctorOK(providerChecks) != test.wantAttestation {
+				t.Fatalf("Doctor misclassified the measurement: performance=%+v attestation=%+v provider checks=%+v", performance, attestation, providerChecks)
+			}
+			if test.wantMeasured {
+				for _, fragment := range []string{"10m0s Sources budget", "the model passed every safety check", test.wantGuidance, llmSuitabilityRecipeArtifact} {
+					if !strings.Contains(performance.Detail, fragment) {
+						t.Fatalf("slow Sources warning omitted %q: %s", fragment, performance.Detail)
+					}
+				}
+			} else if strings.Contains(performance.Detail, "suggested review.phases:") {
+				t.Fatalf("unusable measurement suggested a speed-only workaround: %s", performance.Detail)
+			}
+		})
+	}
+}
+
+func TestTargetedOllamaQualityProbeRunsOneCaseWithoutAttestationWork(t *testing.T) {
+	withStateAndShare(t)
+	previousAdapter, previousReviewer := providerAdapterFactory, reviewClientFactory
+	defer func() {
+		providerAdapterFactory, reviewClientFactory = previousAdapter, previousReviewer
+	}()
+	metadata := ProviderMetadata{
+		Provider: "ollama", Transport: "http-loopback", RuntimeVersion: "ollama 0.32.13",
+		Model: "secure-model:latest", ModelDigest: strings.Repeat("a", 64), ContextTokens: 131072,
+		Thinking: true, Effort: "on", AdapterPolicy: ollamaAdapterPolicy("on", false),
+	}
+	resets := 0
+	providerAdapterFactory = func(Config) providerAdapter {
+		return doctorResetAdapter{doctorFakeAdapter: doctorFakeAdapter{metadata: metadata}, resets: &resets}
+	}
+	reviewer := &ollamaQualityReviewer{metadata: metadata}
+	reviewClientFactory = func(Config) ReviewClient { return reviewer }
+
+	checks := runDoctorStream(context.Background(), ollamaTestConfig(), true, false, ollamaQualityCasePrivilegedWritableDeserialization, nil, nil)
+	qualityChecks := 0
+	for _, check := range checks {
+		switch {
+		case strings.HasPrefix(check.Name, "Ollama quality "):
+			qualityChecks++
+			if !check.OK || !strings.Contains(check.Name, "privileged writable state") {
+				t.Fatalf("targeted quality case failed: %+v", check)
+			}
+		case check.Name == "Ollama refuses over-context input" || check.Name == "Ollama byte/token calibration" || check.Name == "Ollama measured throughput and sources projection":
+			t.Fatalf("targeted quality diagnostic ran full-attestation work: %+v", check)
+		}
+	}
+	if reviewer.calls != 1 || qualityChecks != 1 || resets != 1 {
+		t.Fatalf("targeted diagnostic did not make exactly one isolated quality request: calls=%d checks=%d resets=%d", reviewer.calls, qualityChecks, resets)
 	}
 }
 
@@ -248,7 +408,7 @@ func TestDoctorAnnouncesSlowProviderChecksBeforeStartingThem(t *testing.T) {
 		}}
 	}
 
-	runDoctorStream(context.Background(), aiConfig(), true, nil, func(name, detail string) {
+	runDoctorStream(context.Background(), aiConfig(), true, true, "", nil, func(name, detail string) {
 		announced[name] = detail
 	})
 	if !strings.Contains(announced["provider host/workspace isolation"], "up to 15s") {
@@ -263,9 +423,8 @@ func TestLegacyProviderAttestationGetsClearUpgradeGuidance(t *testing.T) {
 	withStateAndShare(t)
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli test", Model: "gpt", Effort: "high", AdapterPolicy: "test-v1"}
 	provider := brief.ToolIdentity{Path: "/usr/bin/codex", Version: "v", SHA256: strings.Repeat("a", 64)}
-	archive := brief.ToolIdentity{Path: "/usr/bin/bsdtar", Version: "v", SHA256: strings.Repeat("b", 64)}
 	fingerprint := strings.Repeat("c", 64)
-	valid := ProviderAttestation{SchemaVersion: 1, CanaryVersion: providerCanaryVersion, CreatedAt: UTCNow(), PolicyFingerprint: fingerprint, Metadata: metadata, ProviderBinary: provider, ArchiveProbe: archive, Checks: CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}}
+	valid := ProviderAttestation{SchemaVersion: providerAttestationSchemaVersion, CanaryVersion: providerCanaryVersion, CreatedAt: UTCNow(), SemanticFingerprint: fingerprint, Metadata: metadata, ProviderBinary: &provider, Checks: CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}}
 	raw, err := CanonicalJSON(valid)
 	if err != nil {
 		t.Fatal(err)
@@ -279,8 +438,8 @@ func TestLegacyProviderAttestationGetsClearUpgradeGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = loadProviderAttestation(fingerprint, metadata, provider, archive)
-	if err == nil || !strings.Contains(err.Error(), "incompatible schema") || !strings.Contains(err.Error(), "without --no-probe") || strings.Contains(err.Error(), "unknown field") {
+	err = loadProviderAttestation(fingerprint, metadata, provider)
+	if err == nil || !strings.Contains(err.Error(), "incompatible schema") || !strings.Contains(err.Error(), "run 'prolewatch doctor' to replace it") || strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("legacy attestation did not get clear replacement guidance: %v", err)
 	}
 }
@@ -322,9 +481,13 @@ func TestDoctorStreamsEveryCheckItReturns(t *testing.T) {
 // the Codex compatibility ceiling reaches the user through exactly this path.
 func TestStreamedCheckLineMarksWarningsAsWarnings(t *testing.T) {
 	renderer := terminalRenderer{caps: terminalCapabilities{Interactive: true}}
-	warning := renderer.checkLine(Check{Name: "active provider compatibility", OK: false, Required: false, Detail: "newer than the checked ceiling"})
+	warningCheck := Check{Name: "active provider compatibility", OK: false, Required: false, Detail: "newer than the checked ceiling"}
+	warning := renderer.checkLine(warningCheck)
 	if !strings.Contains(warning, "WARN") || strings.Contains(warning, "FAIL") {
 		t.Errorf("a non-required failure did not render as a warning: %q", warning)
+	}
+	if plain := plainCheckLine(warningCheck); !strings.HasPrefix(plain, "[WARN]") || !DoctorOK([]Check{warningCheck}) {
+		t.Errorf("plain Doctor disagreed with the styled and benchmark warning state: %q", plain)
 	}
 	failure := renderer.checkLine(Check{Name: "yay Lua hook", OK: false, Required: true, Detail: "absent"})
 	if !strings.Contains(failure, "FAIL") {

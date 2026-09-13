@@ -72,7 +72,7 @@ package() {
 	// the orchestrator re-executes itself. It must dispatch before trying to load
 	// the deliberately absent normal configuration.
 	previousConfigPath := SystemConfigPath
-	SystemConfigPath = filepath.Join(t.TempDir(), "absent.json")
+	SystemConfigPath = filepath.Join(t.TempDir(), "absent.yaml")
 	t.Cleanup(func() { SystemConfigPath = previousConfigPath })
 	stdout = captureStdout(t, func() {
 		if code := RunMakepkg(context.Background(), []string{gateEnumerateCommand, matches[0]}); code != 0 {

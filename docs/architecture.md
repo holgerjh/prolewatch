@@ -45,6 +45,9 @@ installs none.
 **Trusted.** The human running `yay`, who is the sole administrator of the
 machine. The host kernel, `systemd`, `bubblewrap`, `pacman`, `makepkg`, `yay`,
 the signed official Arch repositories, and the host's own sudo policy.
+When the optional Ollama pilot is enabled, its separately operated daemon,
+backend and local model are additionally trusted for AI enrichment; their
+failure can remove AI output but cannot authorize an install.
 
 **Untrusted.** Everything in the AUR checkout. Every fetched source and archive.
 Everything the build produces. Every AI provider response.
@@ -876,7 +879,11 @@ makepkg phase.
 
 Both package-review decision kinds ask the same way — `[y] Continue · [N]
 Abort`, with Enter defaulting to abort — and the severity lives in the briefing
-above rather than in the shape of the question.
+above rather than in the shape of the question. When AI was skipped solely by
+phase selection and an attested reviewer remains available, the same prompt
+also offers `[r] Run AI review now`. That action reruns the complete scan and
+evaluation, writes a new exact-snapshot report, and refreshes the question; it
+never edits old evidence or changes the configured phase set.
 There is deliberately no typed-word confirmation. Recognised findings describe
 rather than block, so this prompt fires on ordinary packages, and a ceremony
 repeated on ordinary packages becomes muscle memory. Typing a word by reflex is
@@ -984,10 +991,25 @@ and only the current configuration schema is accepted. Compatibility begins at
 the first published release; pre-release schema reconstruction was removed
 rather than preserving parsers for configurations no user release created.
 
-**The attestation says what was observed, and no more.** Doctor's live canaries
-establish two things: the outer sandbox hides a host sentinel and starts with an
-empty workspace, and the provider recognises a prompt-injection fixture in its
-answer. Those are what the stored attestation records.
+**The attestation says what was observed, and no more.** CLI Doctor canaries
+establish that the outer sandbox hides a host sentinel and starts with an empty
+workspace, and that the provider recognises a prompt-injection fixture. The
+Ollama pilot has different evidence: fixed loopback transport, local model
+digest, effective `/api/ps` context, structured output, seven quality cases and
+measured throughput. It also observes that an intentionally over-context
+request is refused and records the aggregate request-byte/prompt-token ratio
+used to validate the batching calibration. Each quality case starts from an
+explicit model unload so prompt-cache state cannot make the attestation depend
+on case order. Canary version 7 binds the current seven-case corpus and makes
+older HTTP attestations stale rather than reinterpreting weaker evidence as the
+current gate. Attestation schema 3 replaces the former full-policy binding with
+a provider-semantic fingerprint: runtime/model identity, prompt/schema,
+adapter behavior, review batching and guidance threshold remain bound, while
+gate selection and unrelated containment policy remain on reports, approvals
+and markers. A phase-selection edit therefore cannot manufacture new model
+evidence, but it also does not discard evidence about an unchanged model. The
+attestation deliberately records no CLI binary, EmptyWorkspace or NoHostRead
+claim; the separately operated daemon is part of the local TCB.
 
 It used to record three more — `no_tools`, `no_commands`, `strict_schema` —
 written true whenever the two canaries passed. Nothing measured them. The outer
@@ -1005,11 +1027,25 @@ fingerprint, so changing it invalidates decisions taken under the old one.
 `saveProviderAttestation` now refuses to persist a check the run did not
 establish, which makes "only what was seen" structural rather than a convention.
 
-The provider CLI keeps its Bubblewrap isolation. Credentials live under the
+The hosted provider CLI keeps its Bubblewrap isolation. Credentials live under the
 invoking user's own state directory, mode 0600, owned by them. There is no
 socket service and no service account: those existed to keep credentials away
 from the invoking user when they were different principals, and in this model
 they are the same person.
+
+The local adapter uses native HTTP only at `127.0.0.1:11434`, with proxy use,
+DNS, redirects, authentication, remote-model metadata, truncation, context
+shifting and tools disabled or rejected. Requests are serialized per user and
+endpoint, not per digest, so two configured models cannot load concurrently and
+exhaust RAM/VRAM. Context-aware batching budgets the complete serialized prompt,
+schema and snapshot. The provisional 2.0-byte/token floor is part of
+`AdapterPolicy`; Doctor requires at least 2.2 observed bytes/token before
+attesting it. Its Sources projection builds a provisional 8 MiB synthetic
+inventory through the production batching path instead of estimating batch
+count separately. `/api/ps`, observed context-overflow refusal and response
+token counts are defense in depth. The exact digest is re-read after every
+response. Model failures still degrade to deterministic inspection and never
+add installation authority.
 
 ---
 
@@ -1058,8 +1094,9 @@ a current limitation:
 
 Installation becomes `yay -S prolewatch && prolewatch setup`. Nine steps become
 one. (That funnel is the design target and the recipe implementing it is
-tested; `0.11.0` ships unsigned and off-AUR, installed from a local package
-build, so the first release trades the short funnel for not publishing a
+tested; the current tree targets `0.12.0` as the first public experimental
+release, to be shipped unsigned and off-AUR and installed from a local package
+build. The first release therefore trades the short funnel for not publishing a
 signing key before the signing process is ready.) For a tool whose value proposition is "your AUR builds are safer," the
 install funnel was the existential risk, not the threat model.
 

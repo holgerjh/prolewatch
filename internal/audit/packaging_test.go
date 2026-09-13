@@ -156,7 +156,7 @@ func TestBothPackageChannelsInstallTheSamePayload(t *testing.T) {
 				t.Errorf("the %s recipe does not install %s", channel, required)
 			}
 		}
-		if !strings.Contains(recipe, "backup=('etc/prolewatch/config.json')") {
+		if !strings.Contains(recipe, "backup=('etc/prolewatch/config.yaml')") {
 			t.Errorf("the %s recipe does not preserve the administrator's configuration", channel)
 		}
 		// A recipe that does not parse is a release that fails on the user's

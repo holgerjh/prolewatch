@@ -48,6 +48,12 @@ func RunCLI(ctx context.Context, args []string) int {
 			cfg = DefaultConfig()
 		}
 		return runDoctorCommand(ctx, cfg, cfgErr, args[1:])
+	case "llm-benchmark":
+		cfg, err := LoadConfig("")
+		if err != nil {
+			return cliError(ExitInvalidInvocation, err)
+		}
+		return runLLMBenchmarkCommand(ctx, cfg, args[1:], os.Stdout, os.Stderr)
 	case gatePrefixesCommand:
 		return RunGatePrefixes(args[1:])
 	case gateEnumerateCommand:
@@ -211,7 +217,7 @@ func runConfigCheck(args []string) int {
 	} else if *terminalStyleOnly {
 		fmt.Println(cfg.Terminal.Style)
 	} else {
-		detail := fmt.Sprintf("Configuration is valid; review mode: %s; minimum confidence: %s; manual review threshold: %s; active provider: %s; vendor scan depth: %d; build network: phase-scoped interactive prompts; terminal style: %s", cfg.Review.Mode, cfg.Review.MinimumConfidence, cfg.Review.ManualReviewMinimumSeverity, cfg.Provider, cfg.Vendor.ScanDepth, cfg.Terminal.Style)
+		detail := fmt.Sprintf("Configuration is valid; review mode: %s; review phases: %s; minimum confidence: %s; manual review threshold: %s; active provider: %s; vendor scan depth: %d; build network: phase-scoped interactive prompts; terminal style: %s", cfg.Review.Mode, strings.Join(cfg.Review.Phases, ","), cfg.Review.MinimumConfidence, cfg.Review.ManualReviewMinimumSeverity, cfg.Provider, cfg.Vendor.ScanDepth, cfg.Terminal.Style)
 		fmt.Println(newTerminalRenderer(cfg, os.Stdout).successLine(detail))
 	}
 	return ExitOK
@@ -281,6 +287,10 @@ func runScan(ctx context.Context, cfg Config, args []string) int {
 		status = ExitReviewUnavailable
 		return cliError(status, err)
 	}
+	if warning, ok := ollamaAttestationStartupWarning(cfg, service); ok {
+		prepareTerminalOutput(ctx)
+		fmt.Fprintln(os.Stderr, renderer.checkLine(warning))
+	}
 	if *phase == "pre" || *phase == "post" {
 		report, status, err = service.ScanDirectoryWithContext(ctx, *phase, *dir, *packageBase, yayContext)
 	} else {
@@ -310,7 +320,21 @@ func runScan(ctx context.Context, cfg Config, args []string) int {
 		// Approval is deliberately two-pass: create a content-bound pending token,
 		// rerun the complete gate so policy consumes it, then remove any leftover
 		// token on success or failure.
-		if mode != "" && confirmInlineDecision(mode, report, nil, *dir, cfg.Review.ManualReviewMinimumSeverity) {
+		var reviewRun inlineAIReviewRun
+		if *phase == "pre" || *phase == "post" {
+			reviewRun = func() (*Report, int, error) {
+				return service.reviewDirectoryNow(ctx, *phase, *dir, *packageBase, yayContext)
+			}
+		} else {
+			reviewRun = func() (*Report, int, error) {
+				return service.reviewArtifactsNow(ctx, packages, base)
+			}
+		}
+		reviewNow := makeOnDemandAIReview(ctx, service, &report, &status, renderer, reviewRun,
+			func(next *Report, nextStatus int, prompt bool) string {
+				return renderer.phaseResult(next, nextStatus, prompt, false)
+			})
+		if mode != "" && confirmInlineDecisionWithReview(mode, report, nil, *dir, cfg.Review.ManualReviewMinimumSeverity, reviewNow) {
 			fmt.Fprintln(os.Stderr, renderer.runningLine("Decision received · validating "+terminalInline(report.PackageBase, 4096)+" / "+phaseName(report.Phase)+" against the exact snapshot"))
 			progressTimedStage(ctx, StageDecisionValidation, cfg.Limits.ScanTimeoutSeconds)
 			tokenPath, createErr := createInlineToken(mode, report, service.Approvals)
@@ -350,6 +374,18 @@ func runScan(ctx context.Context, cfg Config, args []string) int {
 	}
 	return status
 }
+
+func ollamaAttestationStartupWarning(cfg Config, service *AuditService) (Check, bool) {
+	if cfg.Review.Mode != ReviewModeAI || cfg.Provider != "ollama" || service == nil || service.Reviewer != nil ||
+		!strings.HasPrefix(service.InitializationError, "provider attestation validation failed;") {
+		return Check{}, false
+	}
+	return Check{
+		Name: "Ollama AI review disabled", OK: false, Required: false,
+		Detail: "model quality attestation is missing or invalid. Unverified AI verdicts could give a false sense of security, so only deterministic inspection runs. Run 'prolewatch doctor --probe-llm-quality' to check the model and renew its attestation, or set review.mode: deterministic-only in /etc/prolewatch/config.yaml if you do not want AI review",
+	}, true
+}
+
 func runReport(args []string) int {
 	flags := flag.NewFlagSet("report", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -455,11 +491,48 @@ func runDoctorCommand(ctx context.Context, cfg Config, cfgErr error, args []stri
 	flags.SetOutput(os.Stderr)
 	jsonOutput := flags.Bool("json", false, "JSON output")
 	noProbe := flags.Bool("no-probe", false, "skip a real provider request")
+	probeLLMQuality := flags.Bool("probe-llm-quality", false, "run the long Ollama quality assessment and renew its attestation")
+	probeLLMQualityCase := flags.String("probe-llm-quality-case", "", "run one named Ollama quality case without renewing its attestation")
+	diagnoseLLMQualityCase := flags.String("diagnose-llm-quality-case", "", "run one named Ollama quality case and print a redacted JSON diagnosis")
 	if err := flags.Parse(args); err != nil {
 		return ExitInvalidInvocation
 	}
 	if flags.NArg() != 0 {
 		return cliError(ExitInvalidInvocation, errors.New("unexpected doctor arguments"))
+	}
+	qualityModes := 0
+	if *probeLLMQuality {
+		qualityModes++
+	}
+	if *probeLLMQualityCase != "" {
+		qualityModes++
+	}
+	if *diagnoseLLMQualityCase != "" {
+		qualityModes++
+	}
+	if qualityModes > 1 {
+		return cliError(ExitInvalidInvocation, errors.New("doctor accepts only one LLM quality probe or diagnosis mode"))
+	}
+	if *noProbe && qualityModes != 0 {
+		return cliError(ExitInvalidInvocation, errors.New("doctor LLM quality probes require provider probes; do not combine them with --no-probe"))
+	}
+	if *probeLLMQualityCase != "" && !validOllamaQualityCaseID(*probeLLMQualityCase) {
+		return cliError(ExitInvalidInvocation, fmt.Errorf("unknown Ollama quality case %q; choose one of: %s", *probeLLMQualityCase, strings.Join(ollamaQualityCaseIDs(), ", ")))
+	}
+	if *diagnoseLLMQualityCase != "" && !validOllamaQualityCaseID(*diagnoseLLMQualityCase) {
+		return cliError(ExitInvalidInvocation, fmt.Errorf("unknown Ollama quality case %q; choose one of: %s", *diagnoseLLMQualityCase, strings.Join(ollamaQualityCaseIDs(), ", ")))
+	}
+	if cfgErr == nil && qualityModes != 0 && (cfg.Review.Mode != ReviewModeAI || cfg.Provider != "ollama") {
+		return cliError(ExitInvalidInvocation, errors.New("doctor LLM quality probes require review.mode=ai with provider=ollama"))
+	}
+	if *diagnoseLLMQualityCase != "" {
+		if cfgErr != nil {
+			return cliError(ExitInvalidInvocation, cfgErr)
+		}
+		// --json is intentionally redundant in this mode: its sole stdout form
+		// is already the redacted machine-readable report.
+		_ = *jsonOutput
+		return runLLMQualityDiagnosticCommand(ctx, cfg, *diagnoseLLMQualityCase, os.Stdout, os.Stderr)
 	}
 	// --no-probe still validates the stored semantic attestation; it skips only
 	// the live provider request that can consume network/quota.
@@ -486,7 +559,7 @@ func runDoctorCommand(ctx context.Context, cfg Config, cfgErr error, args []stri
 	if stream {
 		announce = func(name, detail string) { fmt.Println(renderer.checkActionLine(name, detail)) }
 	}
-	checks := append(configuration, runDoctorStream(ctx, cfg, !*noProbe, emit, announce)...)
+	checks := append(configuration, runDoctorStream(ctx, cfg, !*noProbe, *probeLLMQuality, *probeLLMQualityCase, emit, announce)...)
 	switch {
 	case *jsonOutput:
 		raw, _ := json.MarshalIndent(checks, "", "  ")
@@ -526,5 +599,5 @@ func rendererForWriter(out io.Writer) terminalRenderer {
 	return newTerminalRenderer(cfg, out)
 }
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: prolewatch <setup|scan|report|inspect|approve|doctor|config-check|install-hook|uninstall-hook|security-scenarios|version> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: prolewatch <setup|scan|report|inspect|approve|doctor|llm-benchmark|config-check|install-hook|uninstall-hook|security-scenarios|version> [options]")
 }

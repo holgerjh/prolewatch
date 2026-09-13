@@ -33,8 +33,9 @@ var (
 )
 
 type providerAdapter interface {
-	// Adapters own the exact supported CLI contract. Callers cannot select argv,
-	// environment, credential paths, tools, or endpoints through the protocol.
+	// Adapters own the exact supported transport contract. Callers cannot select
+	// argv, environment, credential paths, tools, or endpoints through the
+	// dispatcher protocol.
 	Metadata(context.Context) (ProviderMetadata, error)
 	Review(context.Context, ReviewSnapshot) (Verdict, error)
 	CredentialPath() string
@@ -46,10 +47,14 @@ type adapterBase struct {
 }
 
 func activeAdapter(cfg Config) providerAdapter {
-	if cfg.Provider == "anthropic" {
+	switch cfg.Provider {
+	case "anthropic":
 		return &claudeAdapter{adapterBase{cfg, cfg.Providers.Anthropic}}
+	case "ollama":
+		return newOllamaAdapter(cfg)
+	default:
+		return &codexAdapter{adapterBase{cfg, cfg.Providers.Codex}}
 	}
-	return &codexAdapter{adapterBase{cfg, cfg.Providers.Codex}}
 }
 
 type codexAdapter struct{ adapterBase }
@@ -239,7 +244,10 @@ func canonicalRuntimeVersion(name string, parsed []int) string {
 }
 func atoi(value string) int { result, _ := strconv.Atoi(value); return result }
 
-var featureRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// Codex feature keys may contain dotted namespaces (for example,
+// guardianv2.thread_context). Keep each segment restricted to a plain feature
+// identifier: the key is passed as one --disable argument to the CLI.
+var featureRE = regexp.MustCompile(`^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$`)
 
 func codexFeatures(ctx context.Context) ([]string, error) {
 	// Discover every non-removed feature and explicitly disable it. This makes a
@@ -262,9 +270,13 @@ func codexFeatures(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, errors.New("cannot enumerate Codex features")
 	}
+	return parseCodexFeatureList(output.String())
+}
+
+func parseCodexFeatureList(output string) ([]string, error) {
 	seen := map[string]bool{}
 	var features []string
-	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) < 3 || (parts[len(parts)-1] != "true" && parts[len(parts)-1] != "false") || !featureRE.MatchString(parts[0]) || seen[parts[0]] {
 			return nil, fmt.Errorf("cannot parse Codex feature entry %q", truncate(line, 160))
@@ -374,7 +386,7 @@ func validateCredential(path string, uid uint32) error {
 }
 
 func runProviderWorker(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) int {
-	// The worker accepts only the three typed DispatchRequest operations and
+	// The worker accepts only the typed DispatchRequest operations and
 	// derives provider/model/credentials from installed configuration. It runs
 	// as the invoking user and validates that user's credential ownership.
 	uid64 := uint64(providerEffectiveUID())
@@ -402,9 +414,11 @@ func runProviderWorker(ctx context.Context, stdin io.Reader, stdout, stderr io.W
 		return ExitReviewUnavailable
 	}
 	adapter := providerAdapterFactory(cfg)
-	if err := validateCredential(adapter.CredentialPath(), uint32(uid64)); err != nil {
-		fmt.Fprintln(stderr, err)
-		return ExitReviewUnavailable
+	if credential := adapter.CredentialPath(); credential != "" {
+		if err := validateCredential(credential, uint32(uid64)); err != nil {
+			fmt.Fprintln(stderr, err)
+			return ExitReviewUnavailable
+		}
 	}
 	metadata, err := adapter.Metadata(ctx)
 	if err != nil {
@@ -412,6 +426,10 @@ func runProviderWorker(ctx context.Context, stdin io.Reader, stdout, stderr io.W
 		return ExitReviewUnavailable
 	}
 	response := DispatchResponse{ProtocolVersion: DispatchProtocolVersion, Metadata: metadata}
+	if request.Operation == "canary" && cfg.Provider == "ollama" {
+		fmt.Fprintln(stderr, "host/workspace isolation is not observable for the http-loopback Ollama transport")
+		return ExitReviewUnavailable
+	}
 	if request.Operation == "canary" {
 		if err := providerOuterSandboxCanary(ctx, cfg); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -425,6 +443,24 @@ func runProviderWorker(ctx context.Context, stdin io.Reader, stdout, stderr io.W
 			return ExitReviewUnavailable
 		}
 		response.Verdict = &verdict
+		if metrics, ok := adapter.(interface{ ReviewMetrics() []OllamaRequestMetrics }); ok {
+			response.OllamaMetrics = metrics.ReviewMetrics()
+		}
+	}
+	if request.Operation == "diagnose-review" {
+		diagnoser, ok := adapter.(ollamaDiagnosticReviewer)
+		if !ok || cfg.Provider != "ollama" {
+			fmt.Fprintln(stderr, "active provider does not support diagnostic review")
+			return ExitReviewUnavailable
+		}
+		verdict, diagnostic, metrics, err := diagnoser.DiagnoseReview(ctx, *request.Snapshot)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return ExitReviewUnavailable
+		}
+		response.Verdict = verdict
+		response.Diagnostic = &diagnostic
+		response.OllamaMetrics = metrics
 	}
 	encoded, err := CanonicalJSON(response)
 	if err != nil {

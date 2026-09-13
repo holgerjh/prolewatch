@@ -16,7 +16,7 @@ if [[ ${pkgname} == prolewatch-dev ]]; then
 fi
 options=('!debug' '!lto' '!strip')
 # Preserve administrator policy edits across package upgrades.
-backup=('etc/prolewatch/config.json')
+backup=('etc/prolewatch/config.yaml')
 # The source stanza is the only part that differs between channels, and it is
 # where the trust path lives. scripts/render-pkgbuild.sh fills it:
 #
@@ -86,13 +86,13 @@ package() {
     install -Dm0755 "${build_root}/${name}" "${pkgdir}/usr/bin/${name}"
   done
 
-  for name in default-config.json prolewatch.lua review-prompt.md verdict.schema.json; do
+  for name in default-config.yaml prolewatch.lua review-prompt.md verdict.schema.json; do
     install -Dm0644 "${source_root}/share/${name}" "${pkgdir}/usr/share/prolewatch/${name}"
   done
 
   # Protected scans require the system policy file; pacman's backup declaration
   # above preserves local edits across upgrades.
-  install -Dm0644 "${source_root}/share/default-config.json" "${pkgdir}/etc/prolewatch/config.json"
+  install -Dm0644 "${source_root}/share/default-config.yaml" "${pkgdir}/etc/prolewatch/config.yaml"
 
   install -Dm0644 "${source_root}/README.md" "${pkgdir}/usr/share/doc/prolewatch/README.md"
   install -Dm0644 "${source_root}/SECURITY.md" "${pkgdir}/usr/share/doc/prolewatch/SECURITY.md"

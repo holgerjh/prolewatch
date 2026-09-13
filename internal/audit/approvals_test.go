@@ -284,10 +284,29 @@ func TestInlineDecisionCanInspectAllFindingsWithoutAuthorizing(t *testing.T) {
 	}
 }
 
+func TestInlineDecisionOffersOnDemandAIReviewOnlyOnce(t *testing.T) {
+	report := approvalFixture()
+	report.Reviewer = ReviewerReport{Mode: ReviewModeAI, Skipped: "recipe phase is not included in AI review"}
+	var output bytes.Buffer
+	reviews := 0
+	previews := inlineFindingPreviews{review: func(io.Writer) (string, bool) {
+		reviews++
+		report.ReportID = "20260831T010204Z-" + report.ContentHash[:12] + "-bbbbbbbb"
+		return "AI review completed for the refreshed snapshot", true
+	}}
+	if confirmInlineDecisionInput(inlineOverride, report, nil, strings.NewReader("r\nn\n"), &output, previews, "high") {
+		t.Fatal("review followed by the default answer authorized the package")
+	}
+	rendered := output.String()
+	if reviews != 1 || strings.Count(rendered, "[r] Run AI review now") != 1 || !strings.Contains(rendered, "AI review completed for the refreshed snapshot") || !strings.Contains(rendered, report.ReportID) {
+		t.Fatalf("on-demand review was not one-shot or did not refresh the prompt: reviews=%d output=%q", reviews, rendered)
+	}
+}
+
 func TestManualReviewPromptUsesTheBlueProlewatchBlock(t *testing.T) {
 	var out bytes.Buffer
 	renderer := terminalRendererWithCapabilities(&out, terminalCapabilities{Interactive: true, Unicode: true, Color: terminalColorTrue})
-	writeInlineDecisionPrompt(renderer, &out, "demo", "The findings above need your decision.", "prolewatch approve report", true, 7, "high")
+	writeInlineDecisionPrompt(renderer, &out, "demo", "The findings above need your decision.", "prolewatch approve report", true, false, 7, "high")
 	rendered := out.String()
 	for _, want := range []string{"PROLEWATCH", "MANUAL REVIEW REQUIRED", "The findings above need your decision.", "[i] Inspect HIGH/CRITICAL findings · [a] Inspect all 7 findings · [y] Continue · [N] Abort", "38;2;23;147;209"} {
 		if !strings.Contains(rendered, want) {
@@ -298,12 +317,12 @@ func TestManualReviewPromptUsesTheBlueProlewatchBlock(t *testing.T) {
 		t.Fatalf("manual review block retained redundant approval text: %q", rendered)
 	}
 	out.Reset()
-	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", true, 3, "medium")
-	if !strings.Contains(out.String(), "Inspect MEDIUM+ findings") || strings.Contains(out.String(), "HIGH/CRITICAL") {
+	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", true, true, 3, "medium")
+	if !strings.Contains(out.String(), "Inspect MEDIUM+ findings") || !strings.Contains(out.String(), "[r] Run AI review now") || strings.Contains(out.String(), "HIGH/CRITICAL") {
 		t.Fatalf("manual review action did not follow configured threshold: %q", out.String())
 	}
 	out.Reset()
-	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", false, 0, "high")
+	writeInlineDecisionPrompt(renderer, &out, "demo", "review", "later", false, false, 0, "high")
 	if strings.Contains(out.String(), "[i]") || strings.Contains(out.String(), "[a]") {
 		t.Fatalf("a prompt with no previewable findings offered inspection keys: %q", out.String())
 	}

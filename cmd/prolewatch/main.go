@@ -13,6 +13,13 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Restore the default disposition after the first signal. The first Ctrl+C
+	// requests orderly cancellation; a second one must still be able to terminate
+	// immediately if an external runtime does not finish its bounded cleanup.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	status := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(status)

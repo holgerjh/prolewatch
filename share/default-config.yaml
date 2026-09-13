@@ -1,0 +1,139 @@
+# ============================================================================
+# IMPORTANT: AI REVIEW NEEDS A VALID QUALITY ATTESTATION
+# Enabling review.mode: 'ai' with provider: 'ollama' requires a model quality check:
+#   prolewatch doctor --probe-llm-quality
+# Run it again after changing the Ollama model, runtime, context or reasoning,
+# or AI inputs such as the review batch size, prompt, schema or guidance threshold.
+# Changing only 'review.phases' does not invalidate the model quality attestation.
+# Without valid attestation, AI review is deliberately disabled: an untested AI
+# verdict could give a false sense of security. Deterministic checks still run.
+# Doctor stores the attestation in the user's XDG state directory as
+# 'prolewatch/provider-attestation.json', not in this YAML file.
+# If you do not want AI review, keep review.mode: 'deterministic-only'.
+# For Codex/Anthropic AI review, use: 'prolewatch doctor'
+# ============================================================================
+
+# Active AI backend: 'codex', 'anthropic', or 'ollama'. In 'deterministic-only'
+# mode no provider is contacted. All '*_bytes' values below are bytes;
+# '*_seconds' values are seconds.
+provider: codex
+
+# Model names are provider-specific IDs, not a Prolewatch whitelist. Only the
+# selected provider block is used. CLI effort accepts 'none', 'low', 'medium',
+# 'high', 'xhigh', or 'max'; the CLI and model must support the chosen value.
+providers:
+  codex:
+    model: gpt-5.6-sol
+    effort: high
+  anthropic:
+    model: sonnet
+    effort: high
+
+  # Local Ollama uses the fixed '127.0.0.1:11434' endpoint. Use an exact model
+  # tag from 'ollama list'; Doctor binds its digest, runtime, and context.
+  ollama:
+    model: qwen3:14b
+    # Required when Ollama is active: 16384..262144, never above the model's
+    # advertised context. A smaller value can mean more AI review batches.
+    context_tokens: 40960
+    # 'auto', 'off', 'low', 'medium', or 'high'; model support varies.
+    reasoning: off
+    # 0..3600 seconds. Zero unloads after each gate; a positive value can avoid
+    # repeated cold loads at the cost of keeping the model in memory longer.
+    keep_alive_seconds: 300
+    # 1..1800 seconds per Ollama request/batch (not the entire package review).
+    timeout_seconds: 300
+
+# AI can add findings or require a decision, but cannot clear deterministic
+# findings. Without valid provider attestation, AI is disabled for that run.
+review:
+  # 'deterministic-only' or 'ai'. Deterministic inspection runs at all gates.
+  mode: deterministic-only
+  # 'low', 'medium', or 'high'. Lower-confidence AI needs your decision.
+  minimum_confidence: high
+  # 'info', 'low', 'medium', 'high', or 'critical'. Findings at/above this level
+  # need a decision; structural failures remain non-approvable at any setting.
+  manual_review_minimum_severity: high
+  # CLI provider time limit in seconds; Ollama uses its own timeout_seconds.
+  # kill_grace_seconds adds bounded worker cleanup time after either timeout.
+  timeout_seconds: 180
+  kill_grace_seconds: 5
+  # Maximum selected text per review batch (bytes); Ollama's context may impose
+  # a lower ceiling. Must not exceed limits.max_selected_text_bytes.
+  batch_bytes: 768000
+  # Nonempty subset of 'recipe', 'sources', 'artifact'; no duplicates. This selects
+  # routine AI only. Deterministic checks still run everywhere, and [r] can
+  # request one AI pass at a manual-decision prompt in a disabled gate.
+  phases: [sources, artifact]
+
+# Hard resource/coverage stops for scanning untrusted package material. Lower
+# limits reduce exposure but can make inspection incomplete and block approval.
+limits:
+  # Maximum serialized provider-worker request or response (bytes).
+  max_dispatch_bytes: 20971520
+  # Aggregate file count and input bytes for one scan.
+  max_files: 200000
+  max_total_input_bytes: 17179869184
+  # Aggregate archive count, member count, decompressed bytes, and nesting depth.
+  max_archives: 1024
+  max_archive_entries: 100000
+  max_archive_unpacked_bytes: 2147483648
+  max_archive_depth: 4
+  # Text retained from one file and all text selected for AI review (bytes).
+  # Mandatory text omitted by these limits is reported as a coverage gap.
+  max_text_per_file: 4194304
+  max_selected_text_bytes: 16777216
+  # Prefix of each binary sampled for printable strings (bytes).
+  binary_strings_bytes: 131072
+  # Maximum recorded findings and wall-clock scan duration.
+  max_findings: 10000
+  scan_timeout_seconds: 300
+
+# Contained build resource envelope; pre-build recipe evaluation is clamped to
+# tighter internal limits. RAM/CPU are also capped against the real host.
+build:
+  # RAM bytes, CPU quota in cores, maximum tasks/processes, runtime seconds.
+  memory_bytes: 8589934592
+  cpu_count: 4
+  tasks_max: 512
+  timeout_seconds: 7200
+  # Worktree byte/file ceilings and free-space reserve for that filesystem.
+  # disk_reserve_bytes must be smaller than workspace_bytes.
+  workspace_bytes: 17179869184
+  workspace_files: 500000
+  # Captured output bytes for each of stdout and stderr.
+  output_bytes: 33554432
+  disk_reserve_bytes: 2147483648
+
+# No automatic network permission: a new public destination requires an
+# interactive prompt. These values bound the broker and trusted source fetches.
+network:
+  # Only 'prompt' is supported. There is no always-allow or offline mode here.
+  mode: prompt
+  # Seconds to answer a network permission prompt; expiry denies the request.
+  prompt_timeout_seconds: 300
+  # Only 'transaction' is supported; despite its name, a grant lasts only for
+  # one makepkg phase/broker process, not the entire yay transaction.
+  grant_scope: transaction
+  # Distinct prompted destinations, total requests (including rejected and
+  # repeated attempts), and simultaneous connections.
+  max_destinations: 8
+  max_requests: 100000
+  max_connections: 32
+  # Time allowed to connect and idle time on an established connection.
+  connect_timeout_seconds: 15
+  idle_timeout_seconds: 60
+  # Transfer byte ceiling and free-space reserve where fetched sources land.
+  # This reserve is separate from build.disk_reserve_bytes.
+  max_transfer_bytes: 8589934592
+  disk_reserve_bytes: 2147483648
+
+# Vendored dependency depth: 0 hashes every byte but skips semantic scanning
+# inside vendor trees; 1 inspects direct content, 2 opens one nested archive,
+# and so on, up to limits.max_archive_depth.
+vendor:
+  scan_depth: 0
+
+# Display only: 'brand' or 'plain'. Does not change review or policy identity.
+terminal:
+  style: brand

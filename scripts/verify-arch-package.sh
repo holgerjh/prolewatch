@@ -53,8 +53,8 @@ allowed=${metadata}/allowed
   printf '%s\n' .PKGINFO .BUILDINFO .MTREE
   # The payload the PKGBUILD declares, and nothing else.
   printf '%s\n' usr/bin/prolewatch usr/bin/prolewatch-makepkg usr/bin/prolewatch-gpg usr/bin/prolewatch-net
-  printf 'usr/share/prolewatch/%s\n' default-config.json prolewatch.lua review-prompt.md verdict.schema.json
-  printf '%s\n' etc/prolewatch/config.json
+  printf 'usr/share/prolewatch/%s\n' default-config.yaml prolewatch.lua review-prompt.md verdict.schema.json
+  printf '%s\n' etc/prolewatch/config.yaml
   printf 'usr/share/doc/prolewatch/%s\n' README.md SECURITY.md architecture.md
   printf '%s\n' usr/share/doc/prolewatch/docs/ai-review.md
   printf 'usr/share/licenses/prolewatch/%s\n' LICENSE THIRD_PARTY_NOTICES
@@ -83,7 +83,7 @@ fi
 
 # The payload the product needs, asserted the same way as the payload it forbids.
 # A package can be perfectly free of privileged integration and still be unable
-# to run: omitting etc/prolewatch/config.json produced an installation whose
+# to run: omitting etc/prolewatch/config.yaml produced an installation whose
 # every command failed on the file it reads first.
 while IFS= read -r required; do
   if ! grep -qx "${required}" "${listing}"; then
@@ -95,11 +95,11 @@ usr/bin/prolewatch
 usr/bin/prolewatch-makepkg
 usr/bin/prolewatch-gpg
 usr/bin/prolewatch-net
-usr/share/prolewatch/default-config.json
+usr/share/prolewatch/default-config.yaml
 usr/share/prolewatch/prolewatch.lua
 usr/share/prolewatch/review-prompt.md
 usr/share/prolewatch/verdict.schema.json
-etc/prolewatch/config.json
+etc/prolewatch/config.yaml
 usr/share/doc/prolewatch/docs/ai-review.md
 REQUIRED
 

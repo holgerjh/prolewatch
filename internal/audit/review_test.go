@@ -22,7 +22,7 @@ func TestDispatcherHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "codex-cli 9.0.0", Model: "gpt-5.6-sol", Effort: "high", AdapterPolicy: "test-v1"}
-	response := DispatchResponse{ProtocolVersion: 1, Metadata: metadata}
+	response := DispatchResponse{ProtocolVersion: DispatchProtocolVersion, Metadata: metadata}
 	if request.Operation == "review" {
 		guidance := []FindingGuidance{}
 		if os.Getenv("GO_OMIT_FINDING_GUIDANCE") != "1" {
@@ -242,6 +242,32 @@ func TestReviewerBatchesAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestSelectedFilePieceCarriesExactOriginalLineRange(t *testing.T) {
+	raw := []byte("first\nsecond\nthird\nfourth")
+	tests := []struct {
+		name      string
+		offset    int
+		end       int
+		lineStart int
+		lineEnd   int
+		content   string
+	}{
+		{name: "whole file", offset: 0, end: len(raw), lineStart: 1, lineEnd: 4, content: string(raw)},
+		{name: "terminated first line", offset: 0, end: 6, lineStart: 1, lineEnd: 1, content: "first\n"},
+		{name: "newline byte", offset: 5, end: 6, lineStart: 1, lineEnd: 1, content: "\n"},
+		{name: "second line", offset: 6, end: 13, lineStart: 2, lineEnd: 2, content: "second\n"},
+		{name: "crosses lines", offset: 8, end: 16, lineStart: 2, lineEnd: 3, content: "cond\nthi"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			piece := selectedFilePiece("PKGBUILD", raw, test.offset, test.end)
+			if piece.File != "PKGBUILD" || piece.ByteOffset != test.offset || piece.LineStart != test.lineStart || piece.LineEnd != test.lineEnd || piece.Content != test.content {
+				t.Fatalf("selected piece=%+v", piece)
+			}
+		})
+	}
+}
+
 func TestReviewerOmitsUninspectedVendorTreeFromSnapshotManifest(t *testing.T) {
 	cfg := DefaultConfig()
 	reviewer := NewReviewer(cfg)
@@ -272,7 +298,7 @@ func TestReviewerOmitsUninspectedVendorTreeFromSnapshotManifest(t *testing.T) {
 }
 
 func TestSnapshotRejectsUnknownSelectedFile(t *testing.T) {
-	snapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre", ManifestHash: strings.Repeat("0", 64), Coverage: brief.Coverage{Complete: true, Notes: []string{}}, GuidanceMinimumSeverity: "high", BatchCount: 1, Files: []SelectedFile{{File: "missing", Content: "x"}}}
+	snapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre", ManifestHash: strings.Repeat("0", 64), Coverage: brief.Coverage{Complete: true, Notes: []string{}}, GuidanceMinimumSeverity: "high", BatchCount: 1, Files: []SelectedFile{{File: "missing", LineStart: 1, LineEnd: 1, Content: "x"}}}
 	if err := snapshot.Validate(); err == nil {
 		t.Fatal("unknown selected file accepted")
 	}
@@ -282,7 +308,7 @@ func TestSnapshotRejectsLooseManifestShape(t *testing.T) {
 	record := brief.FileRecord{Path: "PKGBUILD", PathB64: "UEtHQlVJTEQ=", Kind: "file", SHA256: strings.Repeat("a", 64), Text: true, BinaryMetadata: map[string]any{}}
 	manifest := record.ManifestValue()
 	manifest["unexpected"] = true
-	snapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre", ManifestHash: strings.Repeat("0", 64), Coverage: brief.Coverage{Complete: true, Notes: []string{}}, GuidanceMinimumSeverity: "high", Manifest: []map[string]any{manifest}, BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", Content: "pkgname=demo"}}}
+	snapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre", ManifestHash: strings.Repeat("0", 64), Coverage: brief.Coverage{Complete: true, Notes: []string{}}, GuidanceMinimumSeverity: "high", Manifest: []map[string]any{manifest}, BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", LineStart: 1, LineEnd: 1, Content: "pkgname=demo"}}}
 	if err := snapshot.Validate(); err == nil {
 		t.Fatal("extra manifest field was accepted")
 	}
@@ -303,7 +329,7 @@ func TestVersionComparisonUsesMinimums(t *testing.T) {
 	if got := fmt.Sprint(mustVersion("0.146.1")); got != "[0 146 1]" {
 		t.Fatal(got)
 	}
-	if compareVersions(mustVersion("0.150.0"), mustVersion(MaxCodexVersion)) != 0 || compareVersions(mustVersion("3.0.0"), mustVersion(MaxClaudeVersion)) != 0 {
+	if compareVersions(mustVersion("0.155.0"), mustVersion(MaxCodexVersion)) != 0 || compareVersions(mustVersion("3.0.0"), mustVersion(MaxClaudeVersion)) != 0 {
 		t.Fatal("provider maximum mismatch")
 	}
 }

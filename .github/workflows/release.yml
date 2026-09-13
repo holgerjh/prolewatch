@@ -34,7 +34,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        arch: [amd64, arm64]
+        # The first release supports the x86-64 Arch package and acceptance path.
+        arch: [amd64]
     permissions:
       contents: read
       id-token: write
@@ -120,4 +121,8 @@ jobs:
       - name: Publish verified tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' dist/* --verify-tag --generate-notes
+        run: |
+          notes_file=".github/release-notes/${GITHUB_REF_NAME}.md"
+          test -f "${notes_file}"
+          gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag \
+            --prerelease --latest=false --notes-file "${notes_file}"

@@ -8,8 +8,10 @@ import (
 	"errors"
 	"github.com/holgerjh/prolewatch/internal/brief"
 	"github.com/holgerjh/prolewatch/internal/safe"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -23,7 +25,7 @@ func aiConfig() Config {
 	// These tests scan the recipe phase, which is not reviewed unless asked
 	// for. Enabling it here keeps them about the policy under test rather than
 	// about the phase gate, which has its own test.
-	cfg.Review.IncludeRecipePhase = true
+	cfg.Review.Phases = []string{"recipe", "sources", "artifact"}
 	return cfg
 }
 
@@ -40,6 +42,20 @@ type fakeReviewer struct {
 	verdicts      []Verdict
 	lastInventory *brief.Inventory
 	lastOptions   ReviewOptions
+}
+
+type cancellingReviewer struct {
+	cancel context.CancelFunc
+}
+
+func (r cancellingReviewer) Probe(context.Context) (ProviderMetadata, error) {
+	return (&fakeReviewer{}).Probe(context.Background())
+}
+
+func (r cancellingReviewer) Review(ctx context.Context, _ string, _ string, _ *brief.Inventory, _ ReviewOptions) (ProviderMetadata, []Verdict, error) {
+	r.cancel()
+	<-ctx.Done()
+	return ProviderMetadata{}, nil, ctx.Err()
 }
 
 func (f *fakeReviewer) Probe(context.Context) (ProviderMetadata, error) {
@@ -305,6 +321,21 @@ func TestProviderTimeoutDegradesTheReviewWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestOperatorCancellationAbortsInsteadOfDegradingTheReview(t *testing.T) {
+	withStateAndShare(t)
+	root := t.TempDir()
+	writePackageFixture(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	service, err := NewAuditService(context.Background(), aiConfig(), cancellingReviewer{cancel: cancel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, status, err := service.ScanDirectory(ctx, "pre", root, "demo")
+	if report != nil || status != ExitExecutionFailure || !errors.Is(err, context.Canceled) {
+		t.Fatalf("operator cancellation became an optional provider outage: report=%+v status=%d err=%v", report, status, err)
+	}
+}
+
 func TestDeterministicOnlySkipsProviderAndAllowsWarnings(t *testing.T) {
 	withStateAndShare(t)
 	root := t.TempDir()
@@ -472,6 +503,55 @@ func TestAIFindingsNeverCarryAcrossGates(t *testing.T) {
 				t.Fatalf("AI finding was represented as carried: %+v", binding)
 			}
 		}
+	}
+}
+
+func TestReportSuppressesRepeatedAIFindingsAndDeterministicEchoes(t *testing.T) {
+	withStateAndShare(t)
+	root := t.TempDir()
+	writeBlockingFixture(t, root)
+	baselineService := newDeterministicTestService(t)
+	baseline, _, err := baselineService.ScanDirectory(context.Background(), "pre", root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original *brief.Finding
+	for index := range baseline.Findings {
+		finding := &baseline.Findings[index]
+		if finding.Source == "deterministic" && finding.Severity == "high" && finding.Line != nil {
+			original = finding
+			break
+		}
+	}
+	if original == nil {
+		t.Fatalf("fixture had no deterministic decision finding: %+v", baseline.Findings)
+	}
+	echo := ReviewFinding{Severity: original.Severity, Category: original.Category, File: original.File,
+		Line: original.Line, Evidence: original.Evidence, Rationale: original.Rationale}
+	newContext := echo
+	newContext.Rationale = "independent AI context at the same source location"
+	verdict := Verdict{SchemaVersion: VerdictSchemaVersion, Verdict: "block", Confidence: "high", Summary: "review needed",
+		Findings: []ReviewFinding{echo, newContext}, Guidance: []FindingGuidance{}, CoverageNotes: []string{}}
+	reviewer := &fakeReviewer{verdicts: []Verdict{verdict, verdict, verdict, verdict}}
+	service, err := NewAuditService(context.Background(), aiConfig(), reviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, status, err := service.ScanDirectory(context.Background(), "pre", root, "demo")
+	if err != nil || status != ExitPolicyBlock || report.Decision != "block" {
+		t.Fatalf("multi-batch findings did not block: status=%d report=%+v err=%v", status, report, err)
+	}
+	var echoCount, distinctAI int
+	for _, finding := range report.Findings {
+		if contentKeyForFinding(finding) == contentKeyForFinding(*original) {
+			echoCount++
+		}
+		if finding.Source == "ai" && finding.Rationale == newContext.Rationale {
+			distinctAI++
+		}
+	}
+	if echoCount != 1 || distinctAI != 1 || len(report.Reviewer.Verdicts) != 4 {
+		t.Fatalf("report repeated an AI echo or lost independent context: echoes=%d distinct=%d verdicts=%d findings=%+v", echoCount, distinctAI, len(report.Reviewer.Verdicts), report.Findings)
 	}
 }
 
@@ -681,7 +761,7 @@ func TestDeterministicFingerprintIgnoresProviderIdentityAndAssets(t *testing.T) 
 }
 
 // Every build setting changes the containment envelope and must therefore move
-// the policy fingerprint that binds reports, approvals, and attestations.
+// the policy fingerprint that binds reports, approvals, and markers.
 func TestBuildFieldsMoveThePolicyFingerprint(t *testing.T) {
 	withStateAndShare(t)
 	archive, err := brief.ArchiveProbeIdentity(context.Background())
@@ -1067,7 +1147,11 @@ func TestRecipePhaseIsReviewedOnlyWhenAsked(t *testing.T) {
 		t.Run(current.name, func(t *testing.T) {
 			reviewer := &fakeReviewer{}
 			cfg := aiConfig()
-			cfg.Review.IncludeRecipePhase = current.included
+			if current.included {
+				cfg.Review.Phases = []string{"recipe", "sources", "artifact"}
+			} else {
+				cfg.Review.Phases = []string{"sources", "artifact"}
+			}
 			service, err := NewAuditService(context.Background(), cfg, reviewer)
 			if err != nil {
 				t.Fatal(err)
@@ -1085,7 +1169,7 @@ func TestRecipePhaseIsReviewedOnlyWhenAsked(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(report.Reviewer.Skipped, "include_recipe_phase") {
+			if !strings.Contains(report.Reviewer.Skipped, "review.phases") {
 				t.Errorf("the skip does not name the setting that controls it: %q", report.Reviewer.Skipped)
 			}
 			// A choice is not a degradation: Error stays empty, so the report
@@ -1103,7 +1187,7 @@ func TestRecipePhaseIsReviewedOnlyWhenAsked(t *testing.T) {
 	// The sources phase is the required gate and is never subject to this flag.
 	reviewer := &fakeReviewer{}
 	cfg := aiConfig()
-	cfg.Review.IncludeRecipePhase = false
+	cfg.Review.Phases = []string{"sources", "artifact"}
 	service, err := NewAuditService(context.Background(), cfg, reviewer)
 	if err != nil {
 		t.Fatal(err)
@@ -1116,53 +1200,109 @@ func TestRecipePhaseIsReviewedOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-func TestHighRecipeFindingsTriggerGuidanceWithoutClearingTheDecision(t *testing.T) {
+func TestReviewPhasesCanSkipTheLocalSourcesCostCenter(t *testing.T) {
+	withStateAndShare(t)
+	checkout := t.TempDir()
+	writePackageFixture(t, checkout)
+	reviewer := &fakeReviewer{}
+	cfg := aiConfig()
+	cfg.Review.Phases = []string{"recipe", "artifact"}
+	service, err := NewAuditService(context.Background(), cfg, reviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, status, err := service.ScanDirectory(context.Background(), "post", checkout, "demo")
+	if err != nil || status != 0 {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if reviewer.calls != 0 || !strings.Contains(report.Reviewer.Skipped, "sources phase") || report.Reviewer.Error != "" || !reflect.DeepEqual(report.Reviewer.Phases, cfg.Review.Phases) {
+		t.Fatalf("sources selection was not a visible non-error skip: calls=%d reviewer=%+v", reviewer.calls, report.Reviewer)
+	}
+}
+
+func TestHighDeterministicFindingInDisabledGateSkipsAIAndOffersOnDemandReview(t *testing.T) {
+	line := 2
+	finding := brief.Finding{Source: "deterministic", Severity: "high", Category: "obfuscation", File: "PKGBUILD", Line: &line,
+		Evidence: "eval", Rationale: "indirect execution requires review", RuleID: "dynamic-execution"}
 	for _, current := range []struct {
-		name     string
-		guidance bool
-		calls    int
+		name          string
+		phase         string
+		routinePhases []string
 	}{
-		{name: "default guidance", guidance: true, calls: 1},
-		{name: "explicitly disabled", guidance: false, calls: 0},
+		{name: "recipe", phase: "pre", routinePhases: []string{"artifact"}},
+		{name: "sources", phase: "post", routinePhases: []string{"artifact"}},
+		{name: "artifact", phase: "artifact", routinePhases: []string{"sources"}},
 	} {
 		t.Run(current.name, func(t *testing.T) {
 			withStateAndShare(t)
-			checkout := t.TempDir()
-			writePackageFixture(t, checkout)
-			if err := os.WriteFile(filepath.Join(checkout, "generated.patch"), []byte("eval \"$generated_command\"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
 			reviewer := &fakeReviewer{}
 			cfg := aiConfig()
-			cfg.Review.IncludeRecipePhase = false
-			cfg.Review.GuideDecisionFindings = current.guidance
+			cfg.Review.Phases = current.routinePhases
 			service, err := NewAuditService(context.Background(), cfg, reviewer)
 			if err != nil {
 				t.Fatal(err)
 			}
-			report, status, err := service.ScanDirectory(context.Background(), "pre", checkout, "demo")
-			if err != nil || status != ExitPolicyBlock {
-				t.Fatalf("high deterministic finding was not preserved: status=%d err=%v", status, err)
+			inventory := ollamaDoctorInventory([]ollamaDoctorFile{{"PKGBUILD", "pkgname=demo\neval \"$generated\"\n"}}, []brief.Finding{finding})
+			inventory.Phase = current.phase
+			report, status, err := service.evaluate(context.Background(), "demo", current.phase, inventory, nil, "", false)
+			if err != nil || status != ExitPolicyBlock || reviewer.calls != 0 || report.Reviewer.Trigger != "" ||
+				report.Reviewer.Skipped != current.name+" phase is not included in AI review · set review.phases to add it" || report.Reviewer.Error != "" || report.Validate() != nil {
+				t.Fatalf("disabled %s gate did not skip AI normally: status=%d calls=%d reviewer=%+v err=%v", current.name, status, reviewer.calls, report.Reviewer, err)
 			}
-			if reviewer.calls != current.calls {
-				t.Fatalf("provider called %d times, want %d", reviewer.calls, current.calls)
-			}
-			if current.guidance && (len(report.Reviewer.Verdicts) != 1 || report.Reviewer.Skipped != "") {
-				t.Fatalf("guidance was not recorded as a completed review: %+v", report.Reviewer)
-			}
-			if current.guidance {
-				statusLine, _ := aiReviewStatus(report, " · ")
-				if report.Reviewer.Trigger != reviewTriggerDecisionFindings || !strings.Contains(statusLine, "completed · triggered by findings") {
-					t.Fatalf("conditional AI run did not explain its trigger: reviewer=%+v status=%q", report.Reviewer, statusLine)
-				}
-			}
-			found := false
-			for _, finding := range report.Findings {
-				found = found || finding.RuleID == "dynamic-execution" && finding.Severity == "high"
-			}
-			if !found || report.Decision != "block" || !strings.Contains(report.Summary, "deterministic finding(s) at HIGH or above") {
-				t.Fatalf("AI guidance cleared or obscured deterministic evidence: decision=%s summary=%q findings=%+v", report.Decision, report.Summary, report.Findings)
+			if !onDemandAIReviewAvailable(service, report) || report.Decision != "block" || !strings.Contains(report.Summary, "deterministic finding(s) at HIGH or above") {
+				t.Fatalf("disabled %s gate lost the decision or [r] action: report=%+v", current.name, report)
 			}
 		})
+	}
+}
+
+func TestOnDemandReviewRescansAndRebindsASkippedPhase(t *testing.T) {
+	withStateAndShare(t)
+	checkout := t.TempDir()
+	writePackageFixture(t, checkout)
+	if err := os.WriteFile(filepath.Join(checkout, "generated.patch"), []byte("eval \"$generated_command\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewer := &fakeReviewer{}
+	cfg := aiConfig()
+	cfg.Review.Phases = []string{"artifact"}
+	service, err := NewAuditService(context.Background(), cfg, reviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, status, err := service.ScanDirectory(context.Background(), "pre", checkout, "demo")
+	if err != nil || status != ExitPolicyBlock || reviewer.calls != 0 || report.Reviewer.Skipped == "" {
+		t.Fatalf("initial phase was not an eligible skipped review: status=%d calls=%d reviewer=%+v err=%v", status, reviewer.calls, report.Reviewer, err)
+	}
+	originalPointer, originalID := report, report.ReportID
+	renderer := newTerminalRenderer(cfg, io.Discard)
+	progress := &terminalProgress{}
+	action := makeOnDemandAIReview(withTerminalProgress(context.Background(), progress), service, &report, &status, renderer,
+		func() (*Report, int, error) {
+			return service.reviewDirectoryNow(context.Background(), "pre", checkout, "demo", brief.YayContext{})
+		},
+		func(next *Report, _ int, _ bool) string { return next.ReportID })
+	if action == nil {
+		t.Fatal("eligible skipped phase did not offer on-demand review")
+	}
+	var output bytes.Buffer
+	rendered, keepPrompt := action(&output)
+	if !keepPrompt || status != ExitPolicyBlock || reviewer.calls != 1 || report != originalPointer || report.ReportID == originalID || rendered != report.ReportID {
+		t.Fatalf("on-demand review did not preserve and refresh the bound decision: keep=%t status=%d calls=%d same-pointer=%t old=%s new=%s rendered=%q", keepPrompt, status, reviewer.calls, report == originalPointer, originalID, report.ReportID, rendered)
+	}
+	if report.Reviewer.Trigger != reviewTriggerOnDemand || report.Reviewer.Skipped != "" || reviewer.lastOptions.Trigger != reviewTriggerOnDemand || report.Validate() != nil || !strings.Contains(output.String(), "rescanning") {
+		t.Fatalf("on-demand report lost provenance or validity: reviewer=%+v options=%+v output=%q validate=%v", report.Reviewer, reviewer.lastOptions, output.String(), report.Validate())
+	}
+	report.Reviewer.Trigger = "decision-findings"
+	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "reviewer trigger") {
+		t.Fatalf("removed automatic trigger was accepted in a report: %v", err)
+	}
+	report.Reviewer.Trigger = reviewTriggerOnDemand
+	if !progress.suspended {
+		t.Fatal("on-demand review left the live progress line able to overwrite the refreshed prompt")
+	}
+	service.Reviewer = nil
+	if onDemandAIReviewAvailable(service, report) {
+		t.Fatal("unavailable reviewer offered an on-demand action")
 	}
 }

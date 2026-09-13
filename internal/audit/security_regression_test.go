@@ -427,15 +427,14 @@ func TestProviderAttestationBinding(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "test", Model: "gpt", Effort: "high", AdapterPolicy: "test"}
 	provider := brief.ToolIdentity{Path: "/usr/bin/codex", Version: "test", SHA256: strings.Repeat("a", 64)}
-	archive := brief.ToolIdentity{Path: "/usr/bin/bsdtar", Version: "test", SHA256: strings.Repeat("b", 64)}
 	fingerprint := strings.Repeat("c", 64)
-	if err := saveProviderAttestation(fingerprint, metadata, provider, archive, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
+	if err := saveProviderAttestation(fingerprint, metadata, provider, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadProviderAttestation(fingerprint, metadata, provider, archive); err != nil {
+	if err := loadProviderAttestation(fingerprint, metadata, provider); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadProviderAttestation(strings.Repeat("d", 64), metadata, provider, archive); err == nil {
+	if err := loadProviderAttestation(strings.Repeat("d", 64), metadata, provider); err == nil {
 		t.Fatal("stale provider attestation accepted")
 	}
 }
@@ -454,7 +453,11 @@ func TestRealAuditServiceRequiresAndAcceptsBoundAttestation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fingerprint, err := ComputePolicyFingerprint(cfg, metadata, archive)
+	policyFingerprint, err := ComputePolicyFingerprint(cfg, metadata, archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attestationFingerprint, err := ComputeProviderAttestationFingerprint(cfg, metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,12 +480,18 @@ func TestRealAuditServiceRequiresAndAcceptsBoundAttestation(t *testing.T) {
 	if !strings.Contains(degraded.InitializationError, "attestation") {
 		t.Fatalf("the briefing would not say why AI review is absent: %q", degraded.InitializationError)
 	}
-	if err := saveProviderAttestation(fingerprint, metadata, provider, archive, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
+	if err := saveProviderAttestation(attestationFingerprint, metadata, provider, CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}); err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewAuditService(context.Background(), cfg, nil)
-	if err != nil || service.PolicyFingerprint != fingerprint {
+	if err != nil || service.PolicyFingerprint != policyFingerprint {
 		t.Fatalf("bound provider attestation was rejected: %+v %v", service, err)
+	}
+	changedSelection := cfg
+	changedSelection.Review.Phases = []string{"artifact"}
+	selectedService, err := NewAuditService(context.Background(), changedSelection, nil)
+	if err != nil || selectedService.Reviewer == nil || selectedService.PolicyFingerprint == policyFingerprint {
+		t.Fatalf("gate selection either invalidated semantic evidence or failed to move transaction policy: service=%+v err=%v", selectedService, err)
 	}
 }
 

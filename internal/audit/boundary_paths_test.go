@@ -61,7 +61,7 @@ func TestMakepkgBrokerSocketPathDoesNotInheritLongStateRoot(t *testing.T) {
 
 func writeCurrentConfig(t *testing.T, cfg Config) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw, err := safe.CanonicalJSON(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -220,19 +220,28 @@ printf '%s\n' '{"subtype":"success","structured_output":{"schema_version":3,"ver
 	if _, err := codex.Metadata(context.Background()); err == nil {
 		t.Error("unsupported Codex 0.145.0 accepted")
 	}
-	codexHostBinary = writeExecutable(t, `
+	versionScript := `
 if [ "${1:-}" = "--version" ]; then
-  echo 'codex-cli 0.151.0'
+  echo 'codex-cli VERSION'
 elif [ "${1:-}" = "features" ] && [ "${2:-}" = "list" ]; then
 	printf 'zeta stable true\nalpha stable false\n'
 else
   exit 2
-fi`)
-	untested, err := codex.Metadata(context.Background())
-	if err != nil {
-		t.Errorf("Codex above the checked ceiling must warn, not refuse: %v", err)
-	} else if untested.CompatibilityWarning == "" {
-		t.Error("Codex above the checked ceiling carried no compatibility warning")
+fi`
+	for _, test := range []struct {
+		version     string
+		wantWarning bool
+	}{
+		{version: "0.154.0"},
+		{version: "0.155.0", wantWarning: true},
+	} {
+		codexHostBinary = writeExecutable(t, strings.Replace(versionScript, "VERSION", test.version, 1))
+		metadata, err := codex.Metadata(context.Background())
+		if err != nil {
+			t.Errorf("Codex %s must run: %v", test.version, err)
+		} else if (metadata.CompatibilityWarning != "") != test.wantWarning {
+			t.Errorf("Codex %s warning=%q, want warning=%t", test.version, metadata.CompatibilityWarning, test.wantWarning)
+		}
 	}
 	for _, version := range []string{"2.1.204", "3.0.0"} {
 		claudeHostBinary = writeExecutable(t, "echo 'claude "+version+"'")
@@ -288,7 +297,7 @@ func TestProviderDispatcherFullProtocolWithHermeticAdapter(t *testing.T) {
 	snapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre",
 		ManifestHash: safe.SHA256Bytes(manifestRaw), Coverage: brief.Coverage{FilesSeen: 1, BytesSeen: 12, TextFiles: 1, TextBytes: 12,
 			SelectedFiles: 1, SelectedBytes: 12, ReviewEligibleFiles: 1, ReviewEligibleBytes: 12, Complete: true, Notes: []string{}},
-		GuidanceMinimumSeverity: "high", Manifest: manifest, BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", Content: "pkgname=demo"}}}
+		GuidanceMinimumSeverity: "high", Manifest: manifest, BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", LineStart: 1, LineEnd: 1, Content: "pkgname=demo"}}}
 	status, raw, stderr = run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "review", Snapshot: &snapshot})
 	if status != 0 || stderr != "" || safe.DecodeJSON(raw, &response) != nil || response.Validate("review") != nil {
 		t.Fatalf("dispatcher review failed: status=%d stdout=%s stderr=%q", status, raw, stderr)
@@ -298,14 +307,14 @@ func TestProviderDispatcherFullProtocolWithHermeticAdapter(t *testing.T) {
 	if err := os.Chmod(credential, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 22 {
 		t.Fatalf("a group-readable provider credential was accepted status=%d", status)
 	}
 	if err := os.Chmod(credential, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	providerConfigLoader = func() (Config, error) { return Config{}, errors.New("config") }
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 20 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 20 {
 		t.Fatalf("dispatcher config failure status=%d", status)
 	}
 	providerConfigLoader = func() (Config, error) {
@@ -313,11 +322,11 @@ func TestProviderDispatcherFullProtocolWithHermeticAdapter(t *testing.T) {
 		cfg.Review.Mode = ReviewModeDeterministicOnly
 		return cfg, nil
 	}
-	if status, _, stderr := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 22 || !strings.Contains(stderr, "disabled") {
+	if status, _, stderr := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 22 || !strings.Contains(stderr, "disabled") {
 		t.Fatalf("deterministic-only provider dispatch status=%d stderr=%q", status, stderr)
 	}
 	providerConfigLoader = func() (Config, error) { cfg := DefaultConfig(); cfg.Limits.MaxDispatchBytes = 1; return cfg, nil }
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 22 {
 		t.Fatalf("dispatcher input limit status=%d", status)
 	}
 	providerConfigLoader = func() (Config, error) {
@@ -330,25 +339,25 @@ func TestProviderDispatcherFullProtocolWithHermeticAdapter(t *testing.T) {
 	if status := runProviderWorker(context.Background(), strings.NewReader("{"), &invalidOut, &invalidErr); status != 22 {
 		t.Fatalf("invalid dispatcher JSON status=%d", status)
 	}
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "unknown"}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "unknown"}); status != 22 {
 		t.Fatalf("invalid dispatcher operation status=%d", status)
 	}
 	providerAdapterFactory = func(Config) providerAdapter {
 		return &failingProviderAdapter{credential: filepath.Join(t.TempDir(), "missing")}
 	}
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 22 {
 		t.Fatalf("missing dispatcher credential status=%d", status)
 	}
 	providerAdapterFactory = func(Config) providerAdapter {
 		return &failingProviderAdapter{credential: credential, metadataErr: errors.New("metadata")}
 	}
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "probe"}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "probe"}); status != 22 {
 		t.Fatalf("dispatcher metadata failure status=%d", status)
 	}
 	providerAdapterFactory = func(Config) providerAdapter {
 		return &failingProviderAdapter{credential: credential, reviewErr: errors.New("review")}
 	}
-	if status, _, _ := run(DispatchRequest{ProtocolVersion: 1, Operation: "review", Snapshot: &snapshot}); status != 22 {
+	if status, _, _ := run(DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "review", Snapshot: &snapshot}); status != 22 {
 		t.Fatalf("dispatcher review failure status=%d", status)
 	}
 }
@@ -466,18 +475,17 @@ func TestCredentialAndCanaryValidationBranches(t *testing.T) {
 	}
 	metadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "v", Model: "m", Effort: "high", AdapterPolicy: "p"}
 	provider := brief.ToolIdentity{Path: "/usr/bin/codex", Version: "v", SHA256: strings.Repeat("a", 64)}
-	archive := brief.ToolIdentity{Path: "/usr/bin/bsdtar", Version: "v", SHA256: strings.Repeat("b", 64)}
-	valid := ProviderAttestation{SchemaVersion: 1, CanaryVersion: providerCanaryVersion, CreatedAt: UTCNow(), PolicyFingerprint: strings.Repeat("c", 64), Metadata: metadata, ProviderBinary: provider, ArchiveProbe: archive, Checks: CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}}
-	if err := valid.Validate(valid.PolicyFingerprint, metadata, provider, archive); err != nil {
+	valid := ProviderAttestation{SchemaVersion: providerAttestationSchemaVersion, CanaryVersion: providerCanaryVersion, CreatedAt: UTCNow(), SemanticFingerprint: strings.Repeat("c", 64), Metadata: metadata, ProviderBinary: &provider, Checks: CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true}}
+	if err := valid.Validate(valid.SemanticFingerprint, metadata, provider); err != nil {
 		t.Fatal(err)
 	}
 	valid.CreatedAt = "invalid"
-	if err := valid.Validate(valid.PolicyFingerprint, metadata, provider, archive); err == nil {
+	if err := valid.Validate(valid.SemanticFingerprint, metadata, provider); err == nil {
 		t.Fatal("invalid canary timestamp accepted")
 	}
 	valid.CreatedAt = UTCNow()
 	valid.Checks.PromptInjectionRecognised = false
-	if err := valid.Validate(valid.PolicyFingerprint, metadata, provider, archive); err == nil {
+	if err := valid.Validate(valid.SemanticFingerprint, metadata, provider); err == nil {
 		t.Fatal("partial canary accepted")
 	}
 }
@@ -791,7 +799,17 @@ func TestDoctorCLIAndWrapperFailurePaths(t *testing.T) {
 	if RunCLI(context.Background(), []string{"version"}) != 0 || RunCLI(context.Background(), []string{"config-check", "--provider-only", "--path", SystemConfigPath}) != 0 {
 		t.Fatal("safe CLI informational command failed")
 	}
-	if runReport([]string{"--latest", "extra"}) == 0 || runInspect([]string{"--latest", "extra"}) == 0 || runApproval("approve", nil) == 0 || runDoctorCommand(context.Background(), cfg, nil, []string{"extra"}) == 0 {
+	if runReport([]string{"--latest", "extra"}) == 0 || runInspect([]string{"--latest", "extra"}) == 0 || runApproval("approve", nil) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"extra"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--no-probe", "--probe-llm-quality"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--no-probe", "--probe-llm-quality-case", ollamaQualityCasePrivilegedWritableDeserialization}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--no-probe", "--diagnose-llm-quality-case", "remote-execution"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--probe-llm-quality", "--probe-llm-quality-case", ollamaQualityCasePrivilegedWritableDeserialization}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--probe-llm-quality-case", "remote-execution", "--diagnose-llm-quality-case", "remote-execution"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--probe-llm-quality-case", "unknown-case"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--diagnose-llm-quality-case", "unknown-case"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--diagnose-llm-quality-case", "remote-execution"}) == 0 ||
+		runDoctorCommand(context.Background(), cfg, nil, []string{"--probe-llm-quality"}) == 0 {
 		t.Fatal("CLI helper status mismatch")
 	}
 	if RunMakepkg(context.Background(), nil) == 0 {
@@ -1094,7 +1112,7 @@ func TestSchemaValidatorsRejectMalformedBoundaryDocuments(t *testing.T) {
 	manifestRaw, _ := safe.CanonicalJSON(manifestList)
 	validSnapshot := ReviewSnapshot{SnapshotSchemaVersion: ReviewSnapshotVersion, PackageBase: "demo", Phase: "pre",
 		ManifestHash: safe.SHA256Bytes(manifestRaw), Coverage: brief.Coverage{Complete: true, Notes: []string{}}, Manifest: manifestList,
-		GuidanceMinimumSeverity: "high", BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", Content: "pkgname=demo"}}}
+		GuidanceMinimumSeverity: "high", BatchCount: 1, Files: []SelectedFile{{File: "PKGBUILD", LineStart: 1, LineEnd: 1, Content: "pkgname=demo"}}}
 	mutateSnapshot := []func(*ReviewSnapshot){
 		func(s *ReviewSnapshot) { s.SnapshotSchemaVersion-- },
 		func(s *ReviewSnapshot) { s.PackageBase = "bad/name" },
@@ -1103,6 +1121,7 @@ func TestSchemaValidatorsRejectMalformedBoundaryDocuments(t *testing.T) {
 		func(s *ReviewSnapshot) { s.BatchCount = 0 },
 		func(s *ReviewSnapshot) { s.Files = nil },
 		func(s *ReviewSnapshot) { s.Files[0].File = "missing" },
+		func(s *ReviewSnapshot) { s.Files[0].LineEnd++ },
 	}
 	for index, mutate := range mutateSnapshot {
 		candidate := validSnapshot
@@ -1115,13 +1134,13 @@ func TestSchemaValidatorsRejectMalformedBoundaryDocuments(t *testing.T) {
 	if err := (DispatchRequest{ProtocolVersion: DispatchProtocolVersion, Operation: "canary"}).Validate(); err != nil {
 		t.Fatalf("valid canary request rejected: %v", err)
 	}
-	for index, request := range []DispatchRequest{{}, {ProtocolVersion: 1, Operation: "probe", Snapshot: &validSnapshot}, {ProtocolVersion: 1, Operation: "canary", Snapshot: &validSnapshot}, {ProtocolVersion: 1, Operation: "review"}, {ProtocolVersion: 1, Operation: "unknown"}} {
+	for index, request := range []DispatchRequest{{}, {ProtocolVersion: DispatchProtocolVersion, Operation: "probe", Snapshot: &validSnapshot}, {ProtocolVersion: DispatchProtocolVersion, Operation: "canary", Snapshot: &validSnapshot}, {ProtocolVersion: DispatchProtocolVersion, Operation: "review"}, {ProtocolVersion: DispatchProtocolVersion, Operation: "unknown"}} {
 		if request.Validate() == nil {
 			t.Errorf("dispatch request mutation %d accepted", index)
 		}
 	}
 	validMetadata := ProviderMetadata{Provider: "codex", Transport: "cli", RuntimeVersion: "v", Model: "m", Effort: "high", AdapterPolicy: "p"}
-	for index, response := range []DispatchResponse{{}, {ProtocolVersion: 1, Metadata: validMetadata}, {ProtocolVersion: 1, Metadata: validMetadata, Verdict: &validVerdict}} {
+	for index, response := range []DispatchResponse{{}, {ProtocolVersion: DispatchProtocolVersion, Metadata: validMetadata}, {ProtocolVersion: DispatchProtocolVersion, Metadata: validMetadata, Verdict: &validVerdict}} {
 		operation := "review"
 		if index == 2 {
 			operation = "probe"

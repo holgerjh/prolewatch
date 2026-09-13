@@ -50,6 +50,10 @@ var (
 	installedFileOwnerUID uint32
 )
 
+type ollamaQualityModelResetter interface {
+	resetModel(context.Context) error
+}
+
 // InstalledPayloadPaths is shared by the installed-payload health check and the
 // packaging test so the package and doctor cannot silently disagree. It was
 // introduced after the package omitted system policy required by protected
@@ -59,7 +63,7 @@ var InstalledPayloadPaths = []string{
 	makepkgWrapperPath,
 	gpgWrapperPath,
 	"/usr/bin/prolewatch-net",
-	"/usr/share/prolewatch/default-config.json",
+	"/usr/share/prolewatch/default-config.yaml",
 	"/usr/share/prolewatch/prolewatch.lua",
 	"/usr/share/prolewatch/review-prompt.md",
 	"/usr/share/prolewatch/verdict.schema.json",
@@ -67,7 +71,7 @@ var InstalledPayloadPaths = []string{
 }
 
 func RunDoctor(ctx context.Context, cfg Config, liveProbe bool) []Check {
-	return runDoctorStream(ctx, cfg, liveProbe, nil, nil)
+	return runDoctorStream(ctx, cfg, liveProbe, liveProbe, "", nil, nil)
 }
 
 // RunDoctorStream is RunDoctor with each check handed to emit the moment it
@@ -77,13 +81,13 @@ func RunDoctor(ctx context.Context, cfg Config, liveProbe bool) []Check {
 // this, doctor printed nothing until every check had finished, which on that
 // path is indistinguishable from a hang. emit may be nil.
 func RunDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(Check)) []Check {
-	return runDoctorStream(ctx, cfg, liveProbe, emit, nil)
+	return runDoctorStream(ctx, cfg, liveProbe, liveProbe, "", emit, nil)
 }
 
 // runDoctorStream also announces work before a slow check starts. Announcements
 // are presentation-only: they are not checks, do not affect the verdict, and
 // are omitted from batch and JSON output.
-func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(Check), announce func(string, string)) []Check {
+func runDoctorStream(ctx context.Context, cfg Config, liveProbe, probeLLMQuality bool, probeLLMQualityCase string, emit func(Check), announce func(string, string)) []Check {
 	// Doctor assembles independent evidence rather than stopping at the first
 	// failure, so operators can repair installation, sandbox, service, and policy
 	// boundaries in one pass. Required checks alone determine the final status.
@@ -125,17 +129,26 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 		return checks
 	}
 
-	activeBinary := "codex"
-	inactiveBinary := "claude"
-	if cfg.Provider == "anthropic" {
-		activeBinary, inactiveBinary = "claude", "codex"
+	if cfg.Provider == "ollama" {
+		record(Check{Name: "active provider transport", OK: true, Required: true, Detail: ollamaLoopbackEndpoint + " (native HTTP; daemon is part of the local TCB)"})
+		for _, inactiveBinary := range []string{"codex", "claude"} {
+			check := doctorExecutableCheck(inactiveBinary, false)
+			check.Name = "inactive provider binary: " + inactiveBinary
+			record(check)
+		}
+	} else {
+		activeBinary := "codex"
+		inactiveBinary := "claude"
+		if cfg.Provider == "anthropic" {
+			activeBinary, inactiveBinary = "claude", "codex"
+		}
+		activeCheck := doctorExecutableCheck(activeBinary, true)
+		activeCheck.Name = "active provider binary"
+		record(activeCheck)
+		inactiveCheck := doctorExecutableCheck(inactiveBinary, false)
+		inactiveCheck.Name = "inactive provider binary"
+		record(inactiveCheck)
 	}
-	activeCheck := doctorExecutableCheck(activeBinary, true)
-	activeCheck.Name = "active provider binary"
-	record(activeCheck)
-	inactiveCheck := doctorExecutableCheck(inactiveBinary, false)
-	inactiveCheck.Name = "inactive provider binary"
-	record(inactiveCheck)
 	adapter := providerAdapterFactory(cfg)
 	schemaRaw, err := os.ReadFile(filepath.Join(ShareRoot(), "verdict.schema.json"))
 	if err == nil {
@@ -155,41 +168,84 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 	record(authCheck)
 	var refreshErr error
 	if liveProbe && compatErr == nil && archiveErr == nil && authErr == nil {
-		// A live doctor establishes three observations, and the attestation records
-		// exactly those three. The outer bwrap hides host state and starts with an
-		// empty workspace; the provider recognises hostile prompt injection in
-		// its answer. Neither observes the provider's tool surface - see
-		// CanaryChecks - so neither is written down as if it had.
-		inventory := providerSemanticCanaryInventory()
-		if announce != nil {
-			announce("provider host/workspace isolation", "checking the empty workspace and hidden host sentinel (up to 15s)")
-		}
-		canaryMetadata, outerErr := doctorProviderCanary(ctx, cfg)
-		outerOK := outerErr == nil && canaryMetadata == metadata
-		if outerErr == nil && !outerOK {
-			outerErr = errors.New("provider metadata differs during the isolation canary")
-		}
-		record(Check{"provider host/workspace isolation", outerOK, true, valueOr(errorString(outerErr), "host sentinel hidden; workspace empty")})
-		if announce != nil {
-			announce("isolated provider semantic canary", fmt.Sprintf("asking %s/%s to assess the prompt-injection fixture (timeout %ds)", metadata.Provider, metadata.Model, cfg.Review.TimeoutSeconds))
-		}
-		reviewMetadata, verdicts, err := reviewClientFactory(cfg).Review(ctx, "doctor-probe", "pre", inventory, ReviewOptions{})
-		semanticOK := err == nil && len(verdicts) == 1 && reviewMetadata == metadata && verdicts[0].Verdict == "block" && verdicts[0].PromptInjectionDetected
-		semanticDetail := errorString(err)
-		if semanticDetail == "" {
-			semanticDetail = fmt.Sprintf("verdicts=%d block=%t injection=%t", len(verdicts), len(verdicts) == 1 && verdicts[0].Verdict == "block", len(verdicts) == 1 && verdicts[0].PromptInjectionDetected)
-		}
-		record(Check{"isolated provider semantic canary", semanticOK, true, semanticDetail})
-		if outerOK && semanticOK {
-			providerBinary, identityErr := providerBinaryIdentity(ctx, cfg, metadata)
-			fingerprint, fingerprintErr := ComputePolicyFingerprint(cfg, metadata, archiveProbe)
-			if identityErr == nil && fingerprintErr == nil {
-				refreshErr = saveProviderAttestation(fingerprint, metadata, providerBinary, archiveProbe,
-					CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true})
-			} else if identityErr != nil {
-				refreshErr = identityErr
-			} else {
-				refreshErr = fingerprintErr
+		if cfg.Provider == "ollama" {
+			// HTTP cannot inherit the CLI Bubblewrap claims. Show the weaker boundary
+			// explicitly. Establishing model quality and measured performance on the
+			// exact daemon/runtime/digest/context tuple is deliberately opt-in: it can
+			// take tens of minutes, while the stored attestation below remains a
+			// required fail-closed boundary for AI review.
+			record(Check{Name: "provider host/workspace isolation", OK: false, Required: false, Detail: "not observable for http-loopback; the separately operated Ollama daemon is part of the local TCB"})
+			var resetQualityModel func(context.Context) error
+			if resetter, ok := adapter.(ollamaQualityModelResetter); ok {
+				resetQualityModel = resetter.resetModel
+			}
+			if probeLLMQuality {
+				_, qualityOK, metrics, _ := runOllamaQualityGate(ctx, cfg, metadata, "", resetQualityModel, announce, func(check Check) { record(check) })
+				truncation, verifiedMetadata, truncationOK := runOllamaTruncationProbe(ctx, adapter, metadata, announce)
+				record(truncation)
+				if truncationOK {
+					metadata = verifiedMetadata
+				}
+				calibration, observedBytesPerToken := ollamaByteTokenCalibration(metrics)
+				record(calibration)
+				performance, performanceMeasured := ollamaPerformanceProjection(cfg, metadata.Effort, metrics, qualityOK && truncationOK && calibration.OK)
+				record(performance)
+				record(ollamaResidencyCheck(metrics))
+				if qualityOK && truncationOK && calibration.OK && performanceMeasured {
+					providerBinary, identityErr := providerBinaryIdentity(ctx, cfg, metadata)
+					fingerprint, fingerprintErr := ComputeProviderAttestationFingerprint(cfg, metadata)
+					if identityErr == nil && fingerprintErr == nil {
+						refreshErr = saveProviderAttestation(fingerprint, metadata, providerBinary, CanaryChecks{
+							LoopbackEndpoint: true, LocalModel: true, ContextVerified: true, StructuredOutput: true,
+							PromptInjectionRecognised: true, QualityGatePassed: true, PerformanceMeasured: true,
+							TruncationRefused: true, ObservedBytesPerToken: observedBytesPerToken,
+						})
+					} else if identityErr != nil {
+						refreshErr = identityErr
+					} else {
+						refreshErr = fingerprintErr
+					}
+				}
+			} else if probeLLMQualityCase != "" {
+				runOllamaQualityGate(ctx, cfg, metadata, probeLLMQualityCase, resetQualityModel, announce, func(check Check) { record(check) })
+			}
+		} else {
+			// A live doctor establishes three observations, and the attestation records
+			// exactly those three. The outer bwrap hides host state and starts with an
+			// empty workspace; the provider recognises hostile prompt injection in
+			// its answer. Neither observes the provider's tool surface - see
+			// CanaryChecks - so neither is written down as if it had.
+			inventory := providerSemanticCanaryInventory()
+			if announce != nil {
+				announce("provider host/workspace isolation", "checking the empty workspace and hidden host sentinel (up to 15s)")
+			}
+			canaryMetadata, outerErr := doctorProviderCanary(ctx, cfg)
+			outerOK := outerErr == nil && canaryMetadata == metadata
+			if outerErr == nil && !outerOK {
+				outerErr = errors.New("provider metadata differs during the isolation canary")
+			}
+			record(Check{"provider host/workspace isolation", outerOK, true, valueOr(errorString(outerErr), "host sentinel hidden; workspace empty")})
+			if announce != nil {
+				announce("isolated provider semantic canary", fmt.Sprintf("asking %s/%s to assess the prompt-injection fixture (timeout %ds)", metadata.Provider, metadata.Model, cfg.Review.TimeoutSeconds))
+			}
+			reviewMetadata, verdicts, err := reviewClientFactory(cfg).Review(ctx, "doctor-probe", "pre", inventory, ReviewOptions{})
+			semanticOK := err == nil && len(verdicts) == 1 && reviewMetadata == metadata && verdicts[0].Verdict == "block" && verdicts[0].PromptInjectionDetected
+			semanticDetail := errorString(err)
+			if semanticDetail == "" {
+				semanticDetail = fmt.Sprintf("verdicts=%d block=%t injection=%t", len(verdicts), len(verdicts) == 1 && verdicts[0].Verdict == "block", len(verdicts) == 1 && verdicts[0].PromptInjectionDetected)
+			}
+			record(Check{"isolated provider semantic canary", semanticOK, true, semanticDetail})
+			if outerOK && semanticOK {
+				providerBinary, identityErr := providerBinaryIdentity(ctx, cfg, metadata)
+				fingerprint, fingerprintErr := ComputeProviderAttestationFingerprint(cfg, metadata)
+				if identityErr == nil && fingerprintErr == nil {
+					refreshErr = saveProviderAttestation(fingerprint, metadata, providerBinary,
+						CanaryChecks{EmptyWorkspace: true, NoHostRead: true, PromptInjectionRecognised: true})
+				} else if identityErr != nil {
+					refreshErr = identityErr
+				} else {
+					refreshErr = fingerprintErr
+				}
 			}
 		}
 	} else if liveProbe {
@@ -203,8 +259,20 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 			reason = "dedicated provider authentication failed"
 		}
 		detail := "not run: " + reason
-		record(Check{"provider host/workspace isolation", false, true, detail})
-		record(Check{"isolated provider semantic canary", false, true, detail})
+		if cfg.Provider == "ollama" {
+			record(Check{"provider host/workspace isolation", false, false, "not observable for http-loopback; " + detail})
+			if probeLLMQuality {
+				record(Check{"Ollama quality gate", false, true, detail})
+				record(Check{"Ollama refuses over-context input", false, true, detail})
+				record(Check{"Ollama byte/token calibration", false, true, detail})
+				record(Check{"Ollama measured throughput and sources projection", false, true, detail})
+			} else if probeLLMQualityCase != "" {
+				record(Check{"Ollama quality case: " + probeLLMQualityCase, false, true, detail})
+			}
+		} else {
+			record(Check{"provider host/workspace isolation", false, true, detail})
+			record(Check{"isolated provider semantic canary", false, true, detail})
+		}
 	}
 	// Even --no-probe must validate the stored attestation: protected scans rely
 	// on it, while setup intentionally avoids spending a provider request.
@@ -217,7 +285,7 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 	}
 	if attestationErr == nil {
 		providerBinary, identityErr := providerBinaryIdentity(ctx, cfg, metadata)
-		fingerprint, fingerprintErr := ComputePolicyFingerprint(cfg, metadata, archiveProbe)
+		fingerprint, fingerprintErr := ComputeProviderAttestationFingerprint(cfg, metadata)
 		switch {
 		case refreshErr != nil:
 			attestationErr = refreshErr
@@ -226,7 +294,7 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 		case fingerprintErr != nil:
 			attestationErr = fingerprintErr
 		default:
-			attestationErr = loadProviderAttestation(fingerprint, metadata, providerBinary, archiveProbe)
+			attestationErr = loadProviderAttestation(fingerprint, metadata, providerBinary)
 		}
 	}
 	record(Check{"provider semantic attestation", attestationErr == nil, true, valueOr(errorString(attestationErr), providerAttestationPath())})
@@ -235,6 +303,9 @@ func runDoctorStream(ctx context.Context, cfg Config, liveProbe bool, emit func(
 
 func providerAuthenticationCheck(cfg Config, adapter providerAdapter) (Check, error) {
 	path := adapter.CredentialPath()
+	if path == "" && cfg.Provider == "ollama" {
+		return Check{"provider authentication", true, false, "not used by the fixed local loopback transport"}, nil
+	}
 	err := validateCredential(path, uint32(providerEffectiveUID()))
 	if err == nil {
 		return Check{providerAuthCheckName, true, true, path}, nil
@@ -300,19 +371,21 @@ func DoctorOK(checks []Check) bool {
 	return true
 }
 
-// plainCheckLine is the unstyled rendering of one check. RenderChecks and the
-// renderer's per-check line share it so the batch and streamed forms cannot
-// drift apart.
-func plainCheckLine(check Check) string {
-	state := "OK"
-	if !check.OK {
-		if check.Required {
-			state = "FAIL"
-		} else {
-			state = "INFO"
-		}
+// checkResultLabel is shared by Doctor's plain/styled renderers and the LLM
+// benchmark, so the same check state cannot be called INFO in one and WARN in
+// another.
+func checkResultLabel(check Check) string {
+	if check.OK {
+		return "OK"
 	}
-	return fmt.Sprintf("[%s] %s: %s", state, check.Name, check.Detail)
+	if check.Required {
+		return "FAIL"
+	}
+	return "WARN"
+}
+
+func plainCheckLine(check Check) string {
+	return fmt.Sprintf("[%s] %s: %s", checkResultLabel(check), check.Name, check.Detail)
 }
 
 func RenderChecks(checks []Check) string {

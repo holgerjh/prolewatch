@@ -47,6 +47,25 @@ type DeterministicAssessment struct {
 	StructuralBlock  bool
 }
 
+// A model sees the deterministic findings in every batch and may repeat the
+// same finding as its own. Compare report-visible content, not Source or RuleID:
+// an exact AI echo adds no new evidence, while a different rationale remains
+// visible as an independent assessment.
+type findingContentKey struct {
+	severity, category, file, evidence, rationale string
+	line                                          int
+	hasLine                                       bool
+}
+
+func contentKeyForFinding(finding brief.Finding) findingContentKey {
+	key := findingContentKey{severity: finding.Severity, category: finding.Category, file: finding.File,
+		evidence: finding.Evidence, rationale: finding.Rationale}
+	if finding.Line != nil {
+		key.line, key.hasLine = *finding.Line, true
+	}
+	return key
+}
+
 func AssessDeterministic(inv *brief.Inventory) DeterministicAssessment {
 	return AssessDeterministicAt(inv, "high")
 }
@@ -84,28 +103,44 @@ func NewAuditService(ctx context.Context, cfg Config, reviewer ReviewClient) (*A
 	var metadata ProviderMetadata
 	initializationError, coverageError := "", ""
 	if cfg.Review.Mode == ReviewModeAI {
-		progressTimedStage(ctx, StageAIProviderCheck, cfg.Review.TimeoutSeconds)
+		progressTimedStage(ctx, StageAIProviderCheck, cfg.ProviderTimeoutSeconds())
 		if reviewer == nil {
 			reviewer = reviewClientFactory(cfg)
 		}
 		var err error
 		metadata, err = reviewer.Probe(ctx)
 		if err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return nil, cause
+			}
 			// AI review is enrichment. A provider outage degrades to a briefing
 			// without an AI section; it never blocks an install. Release
 			// invariant 6.
 			initializationError = "provider compatibility probe failed; AI review disabled for this run: " + err.Error()
 			reviewer = nil
 			active := cfg.ActiveProvider()
-			metadata = ProviderMetadata{Provider: cfg.Provider, Transport: "cli", RuntimeVersion: "unavailable", Model: active.Model, Effort: active.Effort, AdapterPolicy: "unavailable"}
+			transport := "cli"
+			if cfg.Provider == "ollama" {
+				transport = "http-loopback"
+			}
+			metadata = ProviderMetadata{Provider: cfg.Provider, Transport: transport, RuntimeVersion: "unavailable", Model: active.Model, Effort: active.Effort, AdapterPolicy: "unavailable"}
+			if cfg.Provider == "ollama" {
+				metadata.ContextTokens = cfg.Providers.Ollama.ContextTokens
+			}
 			requireAttestation = false
 		}
 	} else {
 		reviewer = nil
 	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
+	}
 	progressStage(ctx, StageArchiveParserCheck)
 	archiveProbe, err := brief.ArchiveProbeIdentity(ctx)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
 		// The archive probe identifies the bsdtar that recognises archive
 		// formats. Without it, archive contents go uninspected - which is a
 		// briefing line about reduced coverage, not a reason to refuse to
@@ -121,6 +156,13 @@ func NewAuditService(ctx context.Context, cfg Config, reviewer ReviewClient) (*A
 	fingerprint, err := ComputePolicyFingerprint(cfg, metadata, archiveProbe)
 	if err != nil {
 		return nil, err
+	}
+	attestationFingerprint := ""
+	if cfg.Review.Mode == ReviewModeAI {
+		attestationFingerprint, err = ComputeProviderAttestationFingerprint(cfg, metadata)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if requireAttestation {
 		progressStage(ctx, StageAIProviderIdentity)
@@ -141,7 +183,7 @@ func NewAuditService(ctx context.Context, cfg Config, reviewer ReviewClient) (*A
 		}
 		if requireAttestation {
 			progressStage(ctx, StageAIProviderAttest)
-			if err := loadProviderAttestation(fingerprint, metadata, providerBinary, archiveProbe); err != nil {
+			if err := loadProviderAttestation(attestationFingerprint, metadata, providerBinary); err != nil {
 				initializationError = "provider attestation validation failed; AI review disabled for this run: " + err.Error()
 				reviewer = nil
 			}
@@ -151,6 +193,14 @@ func NewAuditService(ctx context.Context, cfg Config, reviewer ReviewClient) (*A
 }
 
 func (s *AuditService) ScanDirectoryWithContext(ctx context.Context, phase, root, packageBase string, yayContext brief.YayContext) (*Report, int, error) {
+	return s.scanDirectoryWithContext(ctx, phase, root, packageBase, yayContext, false)
+}
+
+func (s *AuditService) reviewDirectoryNow(ctx context.Context, phase, root, packageBase string, yayContext brief.YayContext) (*Report, int, error) {
+	return s.scanDirectoryWithContext(ctx, phase, root, packageBase, yayContext, true)
+}
+
+func (s *AuditService) scanDirectoryWithContext(ctx context.Context, phase, root, packageBase string, yayContext brief.YayContext, forceAI bool) (*Report, int, error) {
 	if err := yayContext.Validate(); err != nil {
 		return nil, ExitInvalidInvocation, err
 	}
@@ -197,7 +247,7 @@ func (s *AuditService) ScanDirectoryWithContext(ctx context.Context, phase, root
 	if phase == "post" {
 		carried = s.carriedDecision(root, packageBase, inventory, currentManifest)
 	}
-	report, status, err := s.evaluate(ctx, packageBase, phase, inventory, carried, inventory.Root)
+	report, status, err := s.evaluate(ctx, packageBase, phase, inventory, carried, inventory.Root, forceAI)
 	if err != nil {
 		return nil, status, err
 	}
@@ -283,6 +333,14 @@ func carriedFindingIDSet(carried *CarriedDecision) map[string]bool {
 }
 
 func (s *AuditService) ScanArtifacts(ctx context.Context, packages []string, packageBase string) (*Report, int, error) {
+	return s.scanArtifacts(ctx, packages, packageBase, false)
+}
+
+func (s *AuditService) reviewArtifactsNow(ctx context.Context, packages []string, packageBase string) (*Report, int, error) {
+	return s.scanArtifacts(ctx, packages, packageBase, true)
+}
+
+func (s *AuditService) scanArtifacts(ctx context.Context, packages []string, packageBase string, forceAI bool) (*Report, int, error) {
 	progressTimedStage(ctx, StageArtifactInspection, s.Config.Limits.ScanTimeoutSeconds)
 	inventory, err := s.Scanner.ScanArtifactsWithProgress(packages, func(progress brief.ScanProgress, _ bool) {
 		progressScan(ctx, progress)
@@ -290,14 +348,17 @@ func (s *AuditService) ScanArtifacts(ctx context.Context, packages []string, pac
 	if err != nil {
 		return nil, ExitInspectionFailure, err
 	}
-	return s.evaluate(ctx, packageBase, "artifact", inventory, nil, "")
+	return s.evaluate(ctx, packageBase, "artifact", inventory, nil, "", forceAI)
 }
 
-func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, inv *brief.Inventory, carried *CarriedDecision, reviewRoot string) (*Report, int, error) {
+func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, inv *brief.Inventory, carried *CarriedDecision, reviewRoot string, forceAI bool) (*Report, int, error) {
 	// Evaluation combines deterministic evidence, exact earlier-phase findings
 	// already decided in this live transaction, a current one-time token if
 	// present, and then AI review when eligible. Root effects do not consume this
 	// decision directly; it protects the honest-user workflow.
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, ExitExecutionFailure, cause
+	}
 	if err := brief.ValidatePackageBase(packageBase); err != nil {
 		return nil, ExitInvalidInvocation, err
 	}
@@ -333,26 +394,28 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 		carried = nil
 		carriedIDs = nil
 	}
-	// A clean recipe phase is reviewed only when the user asked for every recipe.
-	// Decision-requiring deterministic evidence gets one guidance call by default:
-	// that is where cross-file judgment can explain an ambiguous generated patch
-	// without granting the model authority to clear the deterministic decision.
-	// The required sources gate is never skipped.
+	// Local review cost is gate-shaped: sources can dominate a transaction while
+	// recipe and artifact remain cheap. The explicit phase selection is visible
+	// as a normal skip, never as a provider degradation. An otherwise disabled
+	// phase is reviewed only when the user explicitly requests [r]; AI still
+	// cannot clear the deterministic decision.
 	reviewSkipped := ""
-	guideRecipe := s.Config.Review.GuideDecisionFindings && hasFindingAtOrAbove(inv.Findings, s.Config.Review.ManualReviewMinimumSeverity)
-	reviewTrigger := conditionalReviewTrigger(s.Config, phase, inv.Findings)
-	if s.Config.Review.Mode == ReviewModeAI && phase == "pre" && !s.Config.Review.IncludeRecipePhase && !guideRecipe {
-		if s.Config.Review.GuideDecisionFindings {
-			reviewSkipped = "recipe has no findings at the " + strings.ToUpper(s.Config.Review.ManualReviewMinimumSeverity) + " decision threshold · set review.include_recipe_phase to review every recipe"
-		} else {
-			reviewSkipped = "recipe phase is not included in AI review · set review.include_recipe_phase to add it"
-		}
+	reviewTrigger := ""
+	if forceAI {
+		reviewTrigger = reviewTriggerOnDemand
+	}
+	if s.Config.Review.Mode == ReviewModeAI && !forceAI && !s.Config.ReviewPhaseEnabled(phase) {
+		phaseName := map[string]string{"pre": "recipe", "post": "sources", "artifact": "artifact"}[phase]
+		reviewSkipped = phaseName + " phase is not included in AI review · set review.phases to add it"
 	}
 	// Deterministic hard blocks already decide the phase and cannot be softened by
 	// AI, so skip remote review and avoid unnecessary disclosure/quota use.
 	if s.Config.Review.Mode == ReviewModeAI && !hard && !overridden && reviewError == "" && reviewSkipped == "" {
 		progressStage(ctx, StageAIReview)
-		reviewMetadata, reviewVerdicts, err := s.Reviewer.Review(ctx, packageBase, phase, inv, ReviewOptions{SkipGuidanceFindingIDs: carriedIDs})
+		reviewMetadata, reviewVerdicts, err := s.Reviewer.Review(ctx, packageBase, phase, inv, ReviewOptions{SkipGuidanceFindingIDs: carriedIDs, Trigger: reviewTrigger})
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, ExitExecutionFailure, cause
+		}
 		if err != nil {
 			reviewError = err.Error()
 		} else if reviewMetadata != s.Metadata {
@@ -369,6 +432,10 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 	// explanatory prefix and preserving a valid fail-closed report.
 	reviewError = truncate(reviewError, 4*1024)
 	modelFindings := []brief.Finding{}
+	seenFindingContent := make(map[findingContentKey]bool, len(inv.Findings))
+	for _, finding := range inv.Findings {
+		seenFindingContent[contentKeyForFinding(finding)] = true
+	}
 	modelBlocks := false
 	for _, verdict := range verdicts {
 		if verdict.Verdict != "allow" || !confidenceAtLeast(verdict.Confidence, s.Config.Review.MinimumConfidence) || verdict.PromptInjectionDetected || len(verdict.CoverageNotes) > 0 {
@@ -378,7 +445,12 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 			if severityAtLeast(finding.Severity, s.Config.Review.ManualReviewMinimumSeverity) {
 				modelBlocks = true
 			}
-			modelFindings = append(modelFindings, brief.Finding{Source: "ai", Severity: finding.Severity, Category: finding.Category, File: finding.File, Line: finding.Line, Evidence: finding.Evidence, Rationale: finding.Rationale, RuleID: "ai-review", HardBlock: false})
+			modelFinding := brief.Finding{Source: "ai", Severity: finding.Severity, Category: finding.Category, File: finding.File, Line: finding.Line, Evidence: finding.Evidence, Rationale: finding.Rationale, RuleID: "ai-review", HardBlock: false}
+			key := contentKeyForFinding(modelFinding)
+			if !seenFindingContent[key] {
+				modelFindings = append(modelFindings, modelFinding)
+				seenFindingContent[key] = true
+			}
 		}
 	}
 	// The deterministic assessment is the base in both review modes, and an
@@ -431,7 +503,11 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 	// probe is unavailable, so nobody looked inside the archives there is now
 	// nothing to approve on.
 	approvalEligible := !allowed && inv.ManifestHash != "" && !deterministic.StructuralBlock && s.CoverageError == "" && !verdictsHavePromptInjection(verdicts)
-	report := &Report{SchemaVersion: ReportSchemaVersion, ReportID: reportID, CreatedAt: UTCNow(), Transaction: transaction, PackageBase: packageBase, Phase: phase, Decision: decision, Disposition: disposition, Summary: policySummary(s.Config.Review.Mode, s.Config.Review.MinimumConfidence, s.Config.Review.ManualReviewMinimumSeverity, inv, verdicts, reviewError, overridden, carriedIDs), ContentHash: inv.ManifestHash, PolicyFingerprint: s.PolicyFingerprint, ScannerVersion: ScannerVersion, RulesVersion: RulesVersion, ApplicationVersion: ApplicationVersion, Reviewer: ReviewerReport{Mode: s.Config.Review.Mode, MinimumConfidence: aiMinimumConfidence(s.Config), Provider: metadata.Provider, Transport: metadata.Transport, RuntimeVersion: metadata.RuntimeVersion, Model: metadata.Model, Effort: metadata.Effort, AdapterPolicy: metadata.AdapterPolicy, Error: reviewError, Trigger: reviewTrigger, Skipped: reviewSkipped, Verdicts: verdicts}, Coverage: inv.Coverage, Exclusions: inv.Exclusions, Manifest: manifest, ReviewRoot: reviewRoot, Findings: findings, Overridden: overridden, ApprovalEligible: approvalEligible, NetworkEligible: allowed && phase == "post" && inv.ManifestHash != "", CarriedDecision: carried, ArchiveProbe: s.ArchiveProbe, YayContext: inv.YayContext, ManifestDiff: inv.ManifestDiff, Sources: inv.Sources, SourceVerification: inv.Verification}
+	reviewPhases := []string(nil)
+	if s.Config.Review.Mode == ReviewModeAI {
+		reviewPhases = append(reviewPhases, s.Config.Review.Phases...)
+	}
+	report := &Report{SchemaVersion: ReportSchemaVersion, ReportID: reportID, CreatedAt: UTCNow(), Transaction: transaction, PackageBase: packageBase, Phase: phase, Decision: decision, Disposition: disposition, Summary: policySummary(s.Config.Review.Mode, s.Config.Review.MinimumConfidence, s.Config.Review.ManualReviewMinimumSeverity, inv, verdicts, reviewError, overridden, carriedIDs), ContentHash: inv.ManifestHash, PolicyFingerprint: s.PolicyFingerprint, ScannerVersion: ScannerVersion, RulesVersion: RulesVersion, ApplicationVersion: ApplicationVersion, Reviewer: ReviewerReport{Mode: s.Config.Review.Mode, Phases: reviewPhases, MinimumConfidence: aiMinimumConfidence(s.Config), Provider: metadata.Provider, Transport: metadata.Transport, RuntimeVersion: metadata.RuntimeVersion, Model: metadata.Model, ModelDigest: metadata.ModelDigest, ContextTokens: metadata.ContextTokens, Thinking: metadata.Thinking, Effort: metadata.Effort, AdapterPolicy: metadata.AdapterPolicy, Error: reviewError, Trigger: reviewTrigger, Skipped: reviewSkipped, Verdicts: verdicts}, Coverage: inv.Coverage, Exclusions: inv.Exclusions, Manifest: manifest, ReviewRoot: reviewRoot, Findings: findings, Overridden: overridden, ApprovalEligible: approvalEligible, NetworkEligible: allowed && phase == "post" && inv.ManifestHash != "", CarriedDecision: carried, ArchiveProbe: s.ArchiveProbe, YayContext: inv.YayContext, ManifestDiff: inv.ManifestDiff, Sources: inv.Sources, SourceVerification: inv.Verification}
 	if err := s.Reports.Save(report); err != nil {
 		return nil, ExitStateFailure, err
 	}
@@ -442,22 +518,6 @@ func (s *AuditService) evaluate(ctx context.Context, packageBase, phase string, 
 		return report, ExitReviewUnavailable, nil
 	}
 	return report, ExitPolicyBlock, nil
-}
-
-func hasFindingAtOrAbove(findings []brief.Finding, minimumSeverity string) bool {
-	for _, finding := range findings {
-		if severityAtLeast(finding.Severity, minimumSeverity) {
-			return true
-		}
-	}
-	return false
-}
-
-func conditionalReviewTrigger(cfg Config, phase string, findings []brief.Finding) string {
-	if cfg.Review.Mode == ReviewModeAI && phase == "pre" && !cfg.Review.IncludeRecipePhase && cfg.Review.GuideDecisionFindings && hasFindingAtOrAbove(findings, cfg.Review.ManualReviewMinimumSeverity) {
-		return reviewTriggerDecisionFindings
-	}
-	return ""
 }
 
 func (s *AuditService) authorizationSource(token *ApprovalToken, kind string) (*Report, error) {
@@ -643,9 +703,12 @@ func ComputePolicyFingerprint(cfg Config, metadata ProviderMetadata, archiveProb
 			return "", err
 		}
 		material["provider"] = cfg.Provider
-		material["provider_config"] = cfg.ActiveProvider()
+		material["provider_config"] = cfg.ActiveProviderPolicy()
 		material["review"] = cfg.Review
 		material["runtime_version"] = metadata.RuntimeVersion
+		material["model_digest"] = metadata.ModelDigest
+		material["context_tokens"] = metadata.ContextTokens
+		material["thinking"] = metadata.Thinking
 		material["adapter_policy"] = metadata.AdapterPolicy
 		material["prompt_sha256"] = safe.SHA256Bytes(prompt)
 		material["schema_sha256"] = safe.SHA256Bytes(schema)
