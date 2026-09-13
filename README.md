@@ -157,158 +157,25 @@ Off by default. `review.mode` is `deterministic-only`, so a stock installation
 contacts no provider, sends nothing anywhere, and decides everything locally.
 
 Set it to `ai` and Prolewatch adds a contextual pass after deterministic
-inspection. Codex and Anthropic use a provider CLI, your account and quota; the
-Ollama pilot uses one exact local model digest through a fixed loopback API, so
-package content stays local and no provider account is required. `review.phases`
-selects recipe, Sources and artifact gates. When a disabled gate needs a manual
-decision, `[r] Run AI review now` offers a one-shot review without enabling
-that gate for future packages.
+inspection, at the gates you select. Codex and Anthropic use a provider CLI,
+your account and quota; the Ollama pilot uses one exact local model digest
+through a fixed loopback API, so package content stays local and no provider
+account is required.
 
-#### Which local models are usable
-
-No model is trusted by default: each one must pass a fixed seven-case safety
-corpus bound to its exact digest. A case passes when the model reaches the
-correct verdict. It can pass and still be marked, because a finding has to name
-the exact dangerous line: a model that blocks correctly but points one line off
-sends the inspector to the wrong place. `providers.ollama.reasoning` controls
-Thinking and is the single largest latency factor. These are operator
-measurements, not an allowlist.
-
-`model`, `context_tokens` and `reasoning` are the three values that change per
-model; the rest of the configuration does not depend on which one you pick.
-
-| | `model` | Size | `context_tokens` | `reasoning` | Seven-case corpus | Corpus wall time |
-| --- | --- | --- | --- | --- | --- | --- |
-| ✅ | `qwen3:14b` | 9.3 GB | 40960 | `off` | 7/7, every finding on the exact line | 50 s |
-| ✅ | `qwen2.5-coder:14b` | 9.0 GB | 32768 (its maximum) | `off` | 7/7, but one finding a line off | 47 s |
-| ✅ | `qwen2.5-coder:7b` | 4.7 GB | 32768 (its maximum) | `off` | 7/7, but two findings a line off | 36 s |
-| ✅ | `qwen3:14b` | 9.3 GB | 40960 | `auto` (Thinking) | 7/7, every finding on the exact line | 101 s |
-| ✅ | `gpt-oss:20b` | 13.8 GB | 40960 | `auto` (Thinking) | 7/7, but two findings off the mark | 143 s |
-| ❌ | `gpt-oss:20b` | 13.8 GB | 40960 | `low` | 6/7, missed a `curl \| sh` block | 76 s |
-| ❌ | `llama3.1:8b` | 4.9 GB | 32768 | `off` | 6/7, invented findings on a benign recipe | 32 s |
-| ❌ | `qwen3:8b` | 5.2 GB | 40960 | `off` | 5/7, comments not tied to the quoted line | 39 s |
-
-Start with the shipped `qwen3:14b` example and `reasoning: off`. Thinking doubles the wall time
-without winning a single case here. `qwen2.5-coder:7b` is the smallest model
-that passed and the only tested option for an 8 GB card, at the price of naming
-the wrong line twice where `qwen3:14b` never does. Both qwen2.5-coder models
-cap `context_tokens` at 32,768.
-
-With a local model, start with `phases: [artifact]` rather than the shipped
-`[sources, artifact]`. The times above are for seven small cases; the Sources
-gate is a different scale, projecting 13 to 18 minutes for these models against
-an 8 MiB reference. Add `sources` once you have decided that coverage is worth
-the wait, and see the gate order below for what each one buys. This is a local
-concern: Codex and Anthropic review Sources without that latency.
-
-Measured on an RTX 5080 (16,303 MiB VRAM) with Ollama 0.32.13, one fresh model
-load per case. Full table, residency, throughput and recommended settings:
-[AI review](docs/ai-review.md#local-pilot-profiles).
-
-The phase choice changes AI coverage, not the deterministic scanner: local
-inspection still runs at every gate.
-
-| Configuration value | AI sees | Main benefit | Cost or limitation |
-| --- | --- | --- | --- |
-| `recipe` | `PKGBUILD`, `.SRCINFO`, install scripts and other AUR recipe files, before source fetch | Small, early review of build/install intent; can stop before downloading anything | Cannot see the fetched upstream implementation, and recipe-specific deterministic rules already cover many common hazards, so routine AI has the smallest marginal benefit here |
-| `sources` | Fetched, readable upstream source together with the recipe, before the build | Finds source-level backdoors, unsafe parsing/deserialization and cross-file behavior that may disappear into a compiled binary | Usually the largest input and therefore the slowest local-model phase; generated and final package output does not exist yet |
-| `artifact` | The exact built package before `pacman` installs it, including hooks, services, install scripts and shipped readable code | Best single phase for what will actually reach the host and what will later run as root | The contained build has already run, and native binaries can be less explainable than their source |
-
-No phase completely replaces another. Sources preserve the readable
-implementation before the build, while the artifact shows which activation
-paths and payloads are actually shipped.
-
-If you are paying local latency for AI, enable the gates in this order:
-
-1. **`artifact`, the one that earns its cost.** Containment already bounds what
-   the build itself can reach, so what remains is what gets installed and runs
-   as root from then on. Only this gate sees that, and a package usually ships
-   little readable code, so it is also cheap.
-2. **`sources`, the one you buy deliberately.** It is the only gate that
-   catches what disappears into a compiled binary, and by far the most
-   expensive: the largest and least structured input in the transaction. For
-   the models measured above, the provisional 8 MiB reference projects 13 to 18
-   minutes, where recipe and artifact take seconds.
-3. **`recipe`, the cheapest and the smallest gain.** Deterministic rules are
-   written for `PKGBUILD` shapes and are strongest exactly here, so routine AI
-   adds the least.
-
-Deterministic inspection runs at all three gates regardless of this setting,
-and AI can only turn an allow into a decision, never clear a deterministic
-finding. A gate without AI retains deterministic detection, but loses any
-additional semantic findings and context the model could have supplied.
-
-For a latency-oriented everyday Ollama setup, start with artifact review only
-and keep the model warm across adjacent batches:
-
-```yaml
-provider: ollama
-providers:
-  ollama:
-    keep_alive_seconds: 300
-review:
-  mode: ai
-  phases: [artifact]
-```
-
-These are the fields to change in the shipped full configuration, not a
-replacement file by themselves.
-
-This normally spends one model load per package, on the payload that could
-actually be installed. It deliberately gives up the additional semantic review
-of fetched upstream Sources; deterministic inspection still runs at every gate,
-and the build remains contained. Enable `sources` when that extra coverage is
-worth the latency. If deterministic inspection in a disabled gate needs a
-decision, use `[r]` at the prompt when the additional AI context is worth the
-wait; no provider call runs there automatically.
-
-For stronger routine coverage when the added Sources latency is acceptable,
-use:
-
-```yaml
-review:
-  mode: ai
-  phases: [sources, artifact]
-```
-
-This is the practical high-coverage profile: readable upstream code and the
-final payload are always reviewed, while recipe AI stays off by default because
-that phase has the strongest specialized deterministic coverage. Put all three
-names in `phases` only when routine AI review before source fetch is also worth
-an additional provider call for every package.
-
-When a disabled phase already needs a manual decision and an attested reviewer
-is available, its prompt also offers `[r] Run AI review now`. That action
-rescans the current bytes, runs AI once, writes a new content-bound report, and
-then asks from the refreshed evidence. It does not enable the phase globally.
-
-The fresh-runner cold load before every semantic case belongs only to the
-explicit `doctor --probe-llm-quality` diagnostics. Normal `yay` review keeps the
-model warm across adjacent batches, unloads it before `makepkg` so VRAM is
-available to the build, and unloads it after artifact review. Avoid running the
-full quality probe alongside a package build: the shared lock prevents unsafe
-concurrent requests, but the diagnostic can add waiting and another cold load.
-The shipped `providers.ollama.reasoning` default is `off` for the measured
-`qwen3:14b` example. `auto` retains capability-driven Thinking; `low`,
-`medium`, and `high` require an exact
-quality recheck. Generation is capped at 4,096 tokens with reasoning off and
-6,144 otherwise. Input batching reserves that same cap plus a separate template
-margin, while `providers.ollama.timeout_seconds` bounds each batch in wall time.
-The stored quality evidence uses a narrower semantic fingerprint, so changing
-only `review.phases` or build/network policy does not require repeating the
-seven model cases. Model/runtime/context/reasoning, prompt/schema, review batch
-size, and guidance-threshold changes still do.
-
-The built-in read-only inspector shows each such finding beside a short, clearly
-separated AI comment, anchored to the displayed occurrence by an exact quote. A
-comment that fails to match is discarded. The provider receives the manifest,
-source-verification status, deterministic findings, selected text, and a bounded
-context window. It does not receive a mount of the package tree.
+The provider receives the manifest, source-verification status, deterministic
+findings, selected text, and a bounded context window. It does not receive a
+mount of the package tree. The built-in read-only inspector shows each finding
+beside a short, clearly separated AI comment, anchored to the displayed
+occurrence by an exact quote; a comment that fails to match is discarded.
 
 AI can turn an allow into a decision. It can never clear a deterministic
 finding, and a provider that fails or times out leaves the install proceeding on
-deterministic grounds alone. This is contextual review, not runtime monitoring.
-Setup, providers, cost and tuning live in [AI review](docs/ai-review.md).
+deterministic grounds alone. Deterministic inspection runs at every gate no
+matter which gates AI is enabled for. This is contextual review, not runtime
+monitoring.
+
+Turning it on, choosing gates, and the local models that passed the safety
+corpus are in [Turn on AI review](#4-turn-on-ai-review).
 
 ### 5. The root gate
 
@@ -540,6 +407,133 @@ existing `config.json` files are ignored. Edit the YAML file and run
 `prolewatch config-check` before relying on the new package.
 `prolewatch install-hook` is available when only the lower-level hook step is
 wanted.
+
+### 4. Turn on AI review
+
+Optional, and inert until you set `review.mode` to `ai`. What AI review may and
+may not decide is in [Optional AI guidance](#4-optional-ai-guidance); provider
+setup, cost and tuning are in [AI review](docs/ai-review.md).
+
+#### Choose the gates
+
+The phase choice changes AI coverage, not the deterministic scanner: local
+inspection still runs at every gate.
+
+| Configuration value | AI sees | Main benefit | Cost or limitation |
+| --- | --- | --- | --- |
+| `recipe` | `PKGBUILD`, `.SRCINFO`, install scripts and other AUR recipe files, before source fetch | Small, early review of build/install intent; can stop before downloading anything | Cannot see the fetched upstream implementation, and recipe-specific deterministic rules already cover many common hazards, so routine AI has the smallest marginal benefit here |
+| `sources` | Fetched, readable upstream source together with the recipe, before the build | Finds source-level backdoors, unsafe parsing/deserialization and cross-file behavior that may disappear into a compiled binary | Usually the largest input and therefore the slowest local-model phase; generated and final package output does not exist yet |
+| `artifact` | The exact built package before `pacman` installs it, including hooks, services, install scripts and shipped readable code | Best single phase for what will actually reach the host and what will later run as root | The contained build has already run, and native binaries can be less explainable than their source |
+
+No phase completely replaces another. Sources preserve the readable
+implementation before the build, while the artifact shows which activation
+paths and payloads are actually shipped.
+
+If you are paying local latency for AI, enable the gates in this order:
+
+1. **`artifact`, the one that earns its cost.** Containment already bounds what
+   the build itself can reach, so what remains is what gets installed and runs
+   as root from then on. Only this gate sees that, and a package usually ships
+   little readable code, so it is also cheap.
+2. **`sources`, the one you buy deliberately.** It is the only gate that
+   catches what disappears into a compiled binary, and by far the most
+   expensive: the largest and least structured input in the transaction. For
+   the local models listed below, the provisional 8 MiB reference projects 13
+   to 18 minutes, where recipe and artifact take seconds.
+3. **`recipe`, the cheapest and the smallest gain.** Deterministic rules are
+   written for `PKGBUILD` shapes and are strongest exactly here, so routine AI
+   adds the least.
+
+A gate without AI keeps deterministic detection and loses only the semantic
+findings and context the model would have added.
+
+When a disabled gate needs a manual decision, its prompt offers
+`[r] Run AI review now`: one rescan, one AI call, a new content-bound report,
+then the question again from the refreshed evidence. It changes no
+configuration and does not enable that gate for future packages.
+
+#### Which local models are usable
+
+No model is trusted by default: each one must pass a fixed seven-case safety
+corpus bound to its exact digest. A case passes when the model reaches the
+correct verdict. It can pass and still be marked, because a finding has to name
+the exact dangerous line: a model that blocks correctly but points one line off
+sends the inspector to the wrong place. `providers.ollama.reasoning` controls
+Thinking and is the single largest latency factor. These are operator
+measurements, not an allowlist.
+
+`model`, `context_tokens` and `reasoning` are the three values that change per
+model; the rest of the configuration does not depend on which one you pick.
+
+| | `model` | Size | `context_tokens` | `reasoning` | Seven-case corpus | Corpus wall time |
+| --- | --- | --- | --- | --- | --- | --- |
+| ✅ | `qwen3:14b` | 9.3 GB | 40960 | `off` | 7/7, every finding on the exact line | 50 s |
+| ✅ | `qwen2.5-coder:14b` | 9.0 GB | 32768 (its maximum) | `off` | 7/7, but one finding a line off | 47 s |
+| ✅ | `qwen2.5-coder:7b` | 4.7 GB | 32768 (its maximum) | `off` | 7/7, but two findings a line off | 36 s |
+| ✅ | `qwen3:14b` | 9.3 GB | 40960 | `auto` (Thinking) | 7/7, every finding on the exact line | 101 s |
+| ✅ | `gpt-oss:20b` | 13.8 GB | 40960 | `auto` (Thinking) | 7/7, but two findings off the mark | 143 s |
+| ❌ | `gpt-oss:20b` | 13.8 GB | 40960 | `low` | 6/7, missed a `curl \| sh` block | 76 s |
+| ❌ | `llama3.1:8b` | 4.9 GB | 32768 | `off` | 6/7, invented findings on a benign recipe | 32 s |
+| ❌ | `qwen3:8b` | 5.2 GB | 40960 | `off` | 5/7, comments not tied to the quoted line | 39 s |
+
+Start with the shipped `qwen3:14b` example and `reasoning: off`. Thinking
+doubles the wall time without winning a single case here. `qwen2.5-coder:7b` is
+the smallest model that passed and the only tested option for an 8 GB card, at
+the price of naming the wrong line twice where `qwen3:14b` never does. Both
+qwen2.5-coder models cap `context_tokens` at 32,768.
+
+These wall times are for seven small cases. The Sources gate is a different
+scale, which is why the order above puts it second: with a local model, start
+from `phases: [artifact]` rather than the shipped `[sources, artifact]` and add
+`sources` once you have decided that coverage is worth the wait. Codex and
+Anthropic review Sources without that latency.
+
+Measured on an RTX 5080 (16,303 MiB VRAM) with Ollama 0.32.13, one fresh model
+load per case. Full table, residency, throughput and recommended settings:
+[AI review](docs/ai-review.md#local-pilot-profiles).
+
+#### Everyday profiles
+
+Artifact review only, with the model kept warm across adjacent batches:
+
+```yaml
+provider: ollama
+providers:
+  ollama:
+    keep_alive_seconds: 300
+review:
+  mode: ai
+  phases: [artifact]
+```
+
+These are fields to change in the shipped configuration, not a replacement file
+by themselves. This spends one model load per package, on the payload that
+could actually be installed, and gives up routine semantic review of fetched
+upstream Sources.
+
+When that Sources latency is acceptable, review readable upstream code as well:
+
+```yaml
+review:
+  mode: ai
+  phases: [sources, artifact]
+```
+
+Add `recipe` only if routine AI review before source fetch is worth a provider
+call for every package; that gate has the strongest deterministic coverage
+already.
+
+#### Keeping a local model responsive
+
+A normal `yay` run keeps the model warm across adjacent batches, unloads it
+before `makepkg` so the build gets the VRAM, and unloads it again after
+artifact review. The cold load before every case belongs only to
+`doctor --probe-llm-quality`; do not run that probe alongside a build, because
+the shared lock is safe but the waiting is not worth it.
+
+Changing which gates AI runs at does not invalidate the stored quality
+evidence. Changing the model, runtime, context, reasoning, prompt, schema,
+review batch size or guidance threshold does, and needs a new probe.
 
 ### If Prolewatch stops a package you want
 
