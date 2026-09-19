@@ -1,16 +1,13 @@
 # Probes
 
-Executable answers to the assumptions `docs/architecture.md` rests on. Each
+Runtime checks for assumptions in `docs/architecture.md`. Each
 script is self-contained, re-runnable, needs no privilege, and touches no host
 package database.
 
 ## The rule these exist to enforce
 
-> A claim about how a tool behaves is a hypothesis until a probe runs, no matter
-> how confidently anyone can explain the mechanism.
-
-That is not a slogan. Every claim below was written into the design as settled
-fact, with plausible reasoning attached, and every one of them was wrong:
+Verify claims about tool behaviour with a probe. Earlier design assumptions
+that testing disproved include:
 
 | Claim | Reality |
 | --- | --- |
@@ -25,23 +22,13 @@ fact, with plausible reasoning attached, and every one of them was wrong:
 | The gate's path list is the single enumeration of root-execution surfaces | A second, wider list already existed and had diverged; both omitted `/etc/pacman.d/hooks` |
 | Reading prompts from `/dev/tty` stops package output forging an answer | It stops package bytes becoming input; it does nothing about a keystroke the user typed in response to a fake prompt |
 
-Nothing flagged as an *open question* turned out wrong. The explanations were
-where the errors hid, because they made the claims feel settled enough to write
-down.
+The `CONNECT` assumption survived design review and implementation without a
+test of URL enforcement. The surface-enumeration probe also missed omissions:
+it generated fixtures from the same incomplete list it tested.
 
-Two of these are worth separating from the rest, because they invert the usual
-shape. Most were code doing something the document did not describe. The
-`CONNECT` one was the document promising something the code structurally could
-not do, at the component it named — it survived a design review and an
-implementation because nothing had yet called the function that would have had
-to enforce it. The enumeration one was worse: a probe existed, passed at full
-marks, and could never have failed, because it generated its fixtures from the
-same list it was testing.
-
-So: measure first, then write. If it can be measured in ten minutes, it does not
-enter the architecture as an assertion. And a probe that cannot disagree with
-the code is not evidence — derive fixtures from the platform, or from the
-shipping code, never from a copy of the list under test.
+Measure tool behaviour before documenting it as fact. Derive expected coverage
+from the platform or an independent implementation, not a copy of the list
+under test.
 
 ## Running them
 
@@ -79,10 +66,8 @@ source-tree CI on them.
 ## Skipping is not passing
 
 `probe-yay-interception.sh` and `probe-release-signature.sh` print `SKIP:` and
-exit 0 when their prerequisites are absent. That is right for a source tree and
-wrong for release acceptance: a probe that never ran is not evidence, and a run
-reporting success without having tested anything is the worst acceptance record
-there is.
+exit 0 when their prerequisites are absent. Source-tree checks tolerate these
+skips; release acceptance must reject them.
 
 ```bash
 make probes             # source tree: skips are tolerated and reported
@@ -92,6 +77,5 @@ make acceptance-probes  # acceptance: a skip is a failure
 `make acceptance-probes` sets `PROLEWATCH_PROBE_STRICT=1`. Run it on the
 disposable Arch system where Prolewatch is installed and `prolewatch setup` has
 completed, and keep the output: the command, the package and version, the
-commit, and the paths of the reports and build log it produced. That is the
-record `probe-yay-interception.sh` exists to create, and it is the release gate
-that has none yet.
+commit, and the paths of the reports and build log it produced.
+`probe-yay-interception.sh` has no recorded acceptance pass yet.

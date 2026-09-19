@@ -2,8 +2,8 @@
 
 Prolewatch is experimental security software and has not received an
 independent security audit. It was written with AI assistance and its
-maintainer has not yet read all of it line by line; what that does and does not
-mean is set out in [How this was built](README.md#how-this-was-built). Reports that could affect its inspection,
+maintainer has not yet read all of it line by line; see
+[How this was built](README.md#how-this-was-built). Reports that could affect its inspection,
 containment, privilege, artifact-integrity, or fail-closed guarantees are
 especially important.
 
@@ -23,26 +23,21 @@ installing user generates themselves (see
 [Installation](README.md#installation)). That local signature authenticates the
 built artifact to `pacman`. It says nothing about the source it was built from.
 
-So for this release the trust decision is the one the user makes about the
-checkout: review the source, or confine it to a disposable Arch system. There
-is no cryptographic step that can substitute for that, and this document will
-not pretend otherwise. The signature check against the development key home and
-the installed-file allow-list check what was built; they cannot check what it
-was built from.
+Review the checkout or evaluate it on a disposable Arch system. The development
+signature and installed-file allow-list verify the local build artifact, not
+the source's origin or safety.
 
 ### The signed path exists but is deliberately unpublished
 
-The machinery for a signed release is implemented and tested, and is being held
-back rather than shipped half-finished. When a signed release is made, this
-section will carry the full 40-character maintainer fingerprint — a short key
-id identifies a key ambiguously and is deliberately not used — and
+The signed-release tooling is implemented and tested. When a signed release is
+made, this section will carry the full 40-character maintainer fingerprint and
 `packaging/arch/PKGBUILD.in` will carry the same value in `validpgpkeys`. The
 release artifacts are `prolewatch-<version>.tar.gz` and its detached `.sig`,
 attached to the `v<version>` GitHub release; `scripts/source-archive.sh` builds
 the archive deterministically and vendored, so the same tree yields the same
 SHA-256.
 
-What that will buy, and what it will not. `makepkg` verifies the signature
+`makepkg` verifies the signature
 before running any of the recipe's build steps, and the build then compiles only
 what is inside the verified archive: `-mod=vendor` with `GOPROXY=off` means no
 dependency is fetched while building. Installation never edits the pacman
@@ -57,8 +52,8 @@ would be. Even then it would establish only that the archive is the one that
 fingerprint signed, not that the maintainer is trustworthy.
 
 Prolewatch's own installation runs before any Prolewatch control exists. In a
-signed release the signature covers that first build. In this one, nothing
-does.
+signed release the signature authenticates the source for that first build.
+The current checkout has no maintainer signature.
 
 ## Reporting a vulnerability
 
@@ -92,8 +87,7 @@ currently guaranteed.
 - Applies to: the tree targeting `0.12.0` as the first public experimental release
 
 Prolewatch installs no privileged component: no daemon, socket, service
-account, `sudoers` entry, or setuid binary. That removes the class of finding
-this section used to track, and changes what a serious report looks like.
+account, `sudoers` entry, or setuid binary.
 
 Configuration compatibility starts with the first public release. The current
 `0.12.0` prerelease tree intentionally carries no migration parser or legacy

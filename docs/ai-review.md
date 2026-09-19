@@ -1,9 +1,8 @@
 # AI review
 
 AI review is optional and off by default. `review.mode` is `deterministic-only`,
-so a stock installation contacts no provider, sends nothing anywhere, and
-reaches every decision locally. Nothing on this page applies until you change
-that.
+so a stock installation performs inspection locally without contacting an AI
+provider.
 
 Setting `review.mode` to `ai` adds a contextual pass on top of deterministic
 inspection. Codex and Anthropic run through a provider CLI and your account;
@@ -13,12 +12,10 @@ only to an already-local model served on the fixed loopback endpoint. Each CLI
 batch is bounded by `review.timeout_seconds`; Ollama uses its own
 `providers.ollama.timeout_seconds`.
 
-What AI review can and cannot do is fixed by policy, not by the model you pick:
-it can turn an allow into a decision, it can never clear a deterministic
+AI review can turn an allow into a decision, but cannot clear a deterministic
 finding, and a provider that fails, times out, or is missing leaves a
 deterministic briefing and an install that proceeds on deterministic grounds
-alone. Choosing a stronger model buys you more context, never a more permissive
-tool.
+alone. These rules apply to every supported model.
 
 ## Enable Codex review
 
@@ -29,12 +26,10 @@ with a fixed prompt and structured-output schema for each bounded review batch.
 ### Check the binary
 
 Prolewatch requires Codex CLI `>=0.146.1`, and the adapter has been checked
-against releases below `0.155.0`. The floor is a refusal: below it, the flags
-this adapter passes do not exist. The ceiling is only a warning. A newer Codex
-still runs, and `prolewatch doctor` says plainly that its invocation flags are
-unverified, because every way a newer CLI could actually break the adapter
-already fails closed. Refusing to run the day Arch ships a new Codex would cost
-more than it buys.
+against releases below `0.155.0`. Older versions are rejected because they lack
+required flags. Newer versions run with a `prolewatch doctor` warning that their
+invocation flags have not been verified. Adapter failures fall back to
+deterministic inspection.
 
 Prolewatch runs `/usr/bin/codex` specifically. That path is not searched for on
 `PATH`, so a Codex installed under `~/.local/bin` or `/usr/local/bin` is not the
@@ -279,13 +274,12 @@ approval prompts, and a read-only Codex sandbox.
 | `anthropic` | `sonnet` | `high` | **Moving alias** |
 | `ollama` (pilot) | none | `none` | Exact local digest |
 
-The Anthropic default is a moving alias, with a consequence worth understanding
-before you rely on it. `sonnet` resolves to whichever model the provider
+The Anthropic default, `sonnet`, resolves to whichever model the provider
 currently points it at. Prolewatch records the string it was configured with, so
 a report says `sonnet` without naming the model that actually answered, and two
 reports carrying the same policy fingerprint can have been produced by different
 models weeks apart. Pin a full model identifier in `providers.anthropic.model`
-if you need a report to mean one fixed thing over time. The `codex` default is
+if you need reports to identify a fixed model. The `codex` default is
 already a pinned identifier and does not have this property.
 
 ## Where AI review is spent
@@ -364,13 +358,11 @@ text, never as package source.
 
 ## Cost and effort
 
-Both hosted defaults select `high` effort, the slow and expensive end of the range.
-That is deliberate. A review worth blocking an install on is worth thinking
-about, and review runs once per eligible gate instead of continuously. A phase
-splits into one or more review batches, each invoking the provider under its own
-`review.timeout_seconds`, so the cost is seconds to minutes on a build. Lower
-`effort` in `/etc/prolewatch/config.yaml` if you would rather have speed, and
-expect weaker findings for it.
+Both hosted defaults select `high` effort, which increases latency and cost.
+Each eligible phase uses one or more review batches, each with its own
+`review.timeout_seconds` limit. Review can add seconds to minutes to a build.
+Lower `effort` in `/etc/prolewatch/config.yaml` to favour speed, with a possible
+loss of review quality.
 
 The shipped Ollama example defaults to `off`. Select `auto` to send
 `think:true` when the local model advertises Thinking.
@@ -516,8 +508,8 @@ worse 8 MiB Sources projection in the table above.
 is far smaller than the 768,000-byte default, so the ceiling decides the batch
 boundaries and the configured value never binds; it only starts to matter if set
 to roughly a third of the per-request selected-text budget or below, which makes
-batching worse rather than better. It is nonetheless part of the attested
-fingerprint, so changing it costs a full seven-case re-probe and buys nothing.
+the number of batches increase. It is part of the attested fingerprint, so
+changing it requires a full seven-case re-probe even when it has no effect.
 Tune `context_tokens` and `reasoning` instead.
 
 `keep_alive_seconds: 0` unloads the model at the end of every gate, which adds a

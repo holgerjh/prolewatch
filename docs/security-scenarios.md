@@ -40,8 +40,8 @@ Each scenario declares a `claim` matching the threat model's vocabulary:
 `enforced` for a structural control that stops something without recognising
 anything about the content, `described` for a technique that is recognised and
 reported so the user can decide, and `control` for the baseline cases. There is
-deliberately no `mitigated` - that label attached the strongest claim to pattern
-matching, which is what this corpus exists to keep honest about.
+no `mitigated` label: matching a fixture does not establish mitigation of an
+entire attack technique.
 
 | Scenario | Technique | Historical or control mapping | Expected result | Claim boundary |
 |---|---|---|---|---|

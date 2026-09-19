@@ -8,27 +8,20 @@ vulnerability reporting.
 
 Prolewatch is `AGPL-3.0-only` and every release stays available under it.
 
-**External code contributions are paused for now.** The licensing arrangement for
-outside patches is not settled yet, and merging code before it is settled is the
-one decision here that cannot be undone later: once third-party patches are in,
-the licence of the combined work cannot be changed again without agreement from
-every person who contributed to it. So the pause stays until there is something
-concrete to point at rather than an intention.
+**External code contributions are paused** until the licensing arrangement for
+outside patches is settled.
 
-**Issues need no agreement of any kind.** Bug reports, security reports,
-reproductions, and design arguments are often worth more to this project than a
-patch, and nothing is asked of you for them.
+Bug reports, security reports, reproductions, and design feedback remain welcome
+and require no contributor agreement.
 
 ## What is most useful
 
-The claims in [docs/architecture.md](docs/architecture.md) and
-[docs/aur-threat-model.md](docs/aur-threat-model.md) are meant to be checkable.
-A patch that shows one of them is wrong is the most valuable thing you can
-send, and `scripts/probes/` is where that kind of argument belongs: a claim
-about how a tool behaves is a hypothesis until a probe runs, however
-confidently anyone can explain the mechanism.
+Reports that contradict the claims in
+[docs/architecture.md](docs/architecture.md) or
+[docs/aur-threat-model.md](docs/aur-threat-model.md) are especially useful.
+The runtime checks live in `scripts/probes/`.
 
-Concretely, the most useful contributions are a build escaping containment, a
+Examples include a build escaping containment, a
 prompt that package-controlled output can forge, an approval crossing a
 structural finding, a root-execution surface reaching an install unenumerated,
 or a documented claim that does not survive measurement. For anything with

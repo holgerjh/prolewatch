@@ -1,18 +1,14 @@
 # Prolewatch architecture
 
 Prolewatch adds inspection and containment around AUR builds driven by `yay`.
-This document describes what it does, why each control is shaped the way it is,
-and what it deliberately does not do.
-
-It is written to be checkable. Where a claim rests on a measurement, the probe
-or test that makes it is named; `scripts/probes/` holds the ones that need a
-real kernel.
+This document describes the controls, their rationale, and their limits.
+Measurements link to the relevant tests; `scripts/probes/` holds checks that
+need a real kernel.
 
 ## What the attacks actually do
 
-Every incident in the [AUR threat model](aur-threat-model.md) resolves to one
-of exactly two execution sites. This is the observation the whole architecture
-is built on.
+The incidents in the [AUR threat model](aur-threat-model.md) involve two
+execution sites:
 
 | Incident | Where the payload executes |
 | --- | --- |
@@ -26,8 +22,8 @@ is built on.
 No documented incident depends on the installed program's later runtime
 behaviour. There are two sites, and they need different controls:
 
-- **Build-time execution as the invoking user.** This is the majority. It is
-  solved by containment, and containment needs no privilege.
+- **Build-time execution as the invoking user.** Containment restricts what
+  this code can reach without requiring a privileged service.
 - **Privileged package integration.** `.install` scriptlets run in the current
   transaction; hooks, generators, and similar automatic surfaces run later;
   units and policy files remain inert until activated. `sudo pacman -U` installs
@@ -54,14 +50,7 @@ Everything the build produces. Every AI provider response.
 
 **Explicitly out of scope.** Hostile local users, multi-user shared machines,
 CI isolation, and any promise that a compromised local account gains nothing.
-Prolewatch will not attempt these. The correct answer for those cases is one
-VM or container per principal, and the README will say so in one line rather
-than the project building it.
-
-This is a narrowing, and it is deliberate. The retired model spent most of the
-engineering on the half with no user-visible benefit while detection quality
-and sandbox strength — the half users actually install the tool for — stayed
-"still evolving."
+Those cases require separate isolation, such as a VM per user.
 
 ---
 
@@ -79,16 +68,12 @@ and sandbox strength — the half users actually install the tool for — stayed
 - no host `/run`, D-Bus, systemd socket, or host `/tmp`;
 - resource limits from a transient `systemd --user` unit.
 
-**No clean root.** Binding the host's `/usr` read-only is no worse than what
-plain `yay` does today, and it removes the single largest source of complexity
-in the project — the code that built one was 1,537 lines of package fetching,
-database handling, dependency resolution and cache lifecycle, all parsing
-attacker-adjacent input.
+**No clean root.** Prolewatch binds the host's `/usr` read-only. This avoids
+maintaining a separate package fetcher, database, dependency resolver, and cache.
 
-A clean root would buy dependency-declaration correctness, which is real but is
-a packaging-quality feature `pkgctl build` and `makechrootpkg` already provide.
-Its security benefit is information minimisation, and the cheap half of that is
-taken below. The residual is that a build can tell roughly what is installed
+A clean root also checks dependency declarations; `pkgctl build` and
+`makechrootpkg` provide that feature. It exposes less host information.
+With Prolewatch, a build can tell roughly what is installed
 from `/usr` — a fingerprint rather than a capability, bounded by brokered
 egress and by the checkout being the attacker's own material. The host's
 `/etc/pacman.conf`, mirrorlist and `/var/lib/pacman` are not bound. A contained
@@ -237,12 +222,10 @@ complete and is quietly missing exactly those addresses.
 **Acquisition runs on the trusted side, and no longer goes through the broker
 at all.**
 
-A proxy could not enforce this. HTTPS reaches a proxy as `CONNECT`, which
-carries host and port and nothing else — the same opacity that makes content
-verification the toolchain's job rather than the broker's. So the operation
-moves rather than the claim weakening: Prolewatch evaluates the `PKGBUILD` in containment, freezes the source
+A proxy cannot enforce exact source URLs: HTTPS `CONNECT` exposes only the
+host and port. Prolewatch evaluates the `PKGBUILD` in containment, freezes the source
 set, and **fetches the declared non-VCS sources itself**, with its own HTTP
-client, into `SRCDEST`, before any package code runs. `makepkg` then finds them
+client, into `SRCDEST`, before the build phases run. `makepkg` then finds them
 present and verifies checksums.
 
 Exactness is now by construction — the request is the declared URL because
@@ -561,10 +544,10 @@ Removing the duplicate VCS question safely requires trusted-side, exact-source
 acquisition followed by offline makepkg phases; static prompt context cannot
 provide an equivalent operation boundary.
 
-One honest note on what remains: a `PKGBUILD` can encode data into the URLs it
+A `PKGBUILD` can encode data into the URLs it
 computes, so the declared set is itself a low-bandwidth channel. It is bounded
 by what is visible inside containment — the checkout, which is attacker-authored
-material they already possess — so it is worth stating, not worth a control. The
+material they already possess. No additional control covers this channel. The
 user has already seen these sources in the briefing, which is the single consent
 point for the declared set.
 
@@ -755,8 +738,7 @@ path is attacker-adjacent by necessity. With a predictable name and no
 a trusted process truncate the user's own file — and could make the strip look
 attractive by carrying a surface worth removing.
 
-One cosmetic consequence to own rather than let `pacman -Qi` surface
-   unexplained: `.PKGINFO`'s installed-size becomes stale. `pacman` uses it for
+   `.PKGINFO`'s installed-size becomes stale after stripping. `pacman` uses it for
    reporting, not verification.
 3. **The gate's archive handling runs contained.** The rewrite is now the only
    enforcement mechanism, so archive parsing happens on every gated package.
@@ -774,12 +756,10 @@ One cosmetic consequence to own rather than let `pacman -Qi` surface
    uniformly. `--noscriptlet` stays documented as something the user can pass
    to `yay` themselves; Prolewatch does not build around it.
 
-Stripping is not free, and the gate must not pretend otherwise. Removing a hook
-or a `sysusers.d` entry from a package that genuinely needs it produces a
-broken installation, so the choice is per-surface, defaults to leaving the
-package intact, and what was removed is recorded in the report. For a package
-that is actually hostile the right answer is not to install it at all; the
-strip path is for the ambiguous middle.
+Removing a required hook or `sysusers.d` entry can break the installation.
+The gate therefore offers per-surface choices, defaults to keeping the package
+intact, and records removals in the report. Do not install a package known to be
+hostile; stripping selected files does not make it safe.
 
 `probe-integration-gate.sh` confirms the asymmetry that makes enumeration
 necessary, and it is starker than "no `--nohooks`". `pacman.conf(5)` defines

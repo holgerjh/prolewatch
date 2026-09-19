@@ -16,16 +16,15 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-663399"></a>
 </p>
 
-Installing from the AUR runs a stranger's code on your machine twice. First
-`makepkg` builds the package, and that build runs as you, with access to
-everything you can reach. Then `pacman` installs the result as root.
+Prolewatch contains AUR builds and inspects packages before installation.
+Normally, `makepkg` runs package-controlled code with your user's access, and
+`pacman` installs the result as root.
 
-Prolewatch breaks that in two places. The build gets no home directory and no
-network: just the sources the recipe declared, and a prompt if it reaches for
-more. The install gets no blank cheque: before `pacman` sees the package you get
-its root integration on screen, and the parts that need nobody's help to run
-stop and wait for you. Install scriptlets, pacman hooks, udev rules. Keep them,
-or strip them out of the archive.
+With Prolewatch, builds have no access to your home directory or direct network
+connection. Declared sources are fetched separately; additional network access
+requires approval. Before installation, Prolewatch displays privileged package
+integration and asks whether to keep or strip automatic surfaces such as
+install scriptlets, pacman hooks, and udev rules.
 
 Prolewatch hooks into `yay` instead of replacing it. `yay` still resolves the
 transaction, `makepkg` still builds the package, and the final install stays
@@ -41,7 +40,7 @@ public experimental release.
 
 > [!WARNING]
 > Prolewatch is experimental and has not been independently audited. It does not
-> certify AUR packages as safe. 
+> certify AUR packages as safe.
 > See [How this was built](#how-this-was-built) and, if in doubt, start on an
 > isolated Arch Linux system before relying on it.
 
@@ -49,10 +48,9 @@ public experimental release.
 
 ### A guarded transaction
 
-Prolewatch reviews the recipe, pauses before network contact, and keeps source
-acquisition and `makepkg` inside the contained transaction. It ends where its
-job ends: at `pacman` asking for your password, because the install itself
-stays yours.
+Prolewatch reviews the recipe, prompts for network access, and contains
+package-controlled code during source acquisition and the build. Installation
+uses your own `sudo pacman -U`.
 
 <p align="center">
   <a href="docs/images/prolewatch-basic.gif"><img src="docs/images/prolewatch-basic.gif" alt="Animated terminal demo of Prolewatch reviewing catclock-git, prompting before network access, and running makepkg in containment." width="1105"></a>
@@ -62,13 +60,9 @@ stays yours.
 
 ### What the package intends to run as root
 
-`gtk2` is about as ordinary as a package gets, and nothing in it is malicious.
-It also ships an install scriptlet and a pacman hook, and that hook runs as root
-on every pacman transaction you make from then on. You have almost certainly
-never seen either one.
-
-Prolewatch prints them before `pacman` receives the archive, with the code they
-would run, and lets you keep everything or strip what you did not ask for.
+This `gtk2` package ships an install scriptlet and a pacman hook. Prolewatch
+shows their code before handing the archive to `pacman`, and lets you keep or
+strip them.
 
 <p align="center">
   <a href="docs/images/prolewatch-root-gate.png"><img src="docs/images/prolewatch-root-gate.png" alt="Prolewatch's privileged-integration gate listing gtk2's install scriptlet and its pacman hook, each with the code it would run as root, above a keep-or-strip menu." width="1105"></a>
@@ -101,24 +95,19 @@ enumerated `/etc`, read-only `/usr`, no capabilities, private process and
 network namespaces, and hard limits on memory, CPU, tasks, runtime, file size,
 and the whole process tree.
 
-Your SSH keys, GnuPG directory, browser profiles etc stay safe outside of the
-build's scope.
+Your SSH keys, GnuPG directory, and browser profiles are outside the build's
+scope. These restrictions apply regardless of whether inspection recognises
+malicious code.
 
-That is why containment comes first: it does not have to recognise malicious
-code to limit what the build can reach.
-
-A dedicated build account gets you part of this, and it is the honest thing to
-measure against. But its home persists between builds, so package code can
-settle in and wait for the next one, its network and resources stay
-unrestricted, and your whole AUR workflow has to move into that account with the
-built package coming back out. `yay` stays where it is here.
+A separate build account also isolates your personal files, but needs additional
+controls for persistent state, network access, and resource use. Prolewatch
+applies those controls within your existing `yay` workflow.
 
 ### 2. Sources arrive before the package can speak
 
-Prolewatch evaluates the `PKGBUILD` inside containment, freezes the source set
-it declared, and fetches those sources on the trusted side, before one line of
-package-authored shell runs. A recipe that computes a different URL later fails
-closed.
+Prolewatch evaluates the `PKGBUILD` inside containment, freezes its declared
+source set, and fetches those sources on the trusted side before the build
+phases run. A recipe that computes a different URL later fails closed.
 
 The build has no direct egress. When a phase does reach for the network, the
 first public HTTP(S) destination stops the build and asks you, in your terminal,
@@ -153,8 +142,8 @@ prints the report itself.
 
 ### 4. Optional AI guidance
 
-Off by default. `review.mode` is `deterministic-only`, so a stock installation
-contacts no provider, sends nothing anywhere, and decides everything locally.
+By default, `review.mode` is `deterministic-only`: inspection runs locally
+without contacting an AI provider.
 
 Set it to `ai` and Prolewatch adds a contextual pass after deterministic
 inspection, at the gates you select. Codex and Anthropic use a provider CLI,
@@ -187,25 +176,19 @@ scriptlets, `libalpm` hooks, udev rules, `sysusers.d`, `tmpfiles.d`, generators,
 polkit action declaration, a PAM module nothing references: those are printed
 and passed.
 
-That line is drawn on purpose. Asking about every ordinary service unit puts the
-same unanswerable question on the most common AUR package there is, and the
-reflex it trains gets paid back on the `.INSTALL` scriptlet that really does run
-as root today.
+Limiting prompts to automatic integration reduces repeated questions about
+services that still require explicit activation.
 
 When the gate opens, keep everything or strip any listed member before `yay`
 hands the archive to `pacman`. A package carrying one of those surfaces needs a
 terminal, so an unattended install stops there.
 
-Containment limits what the build could reach. The gate shows what the finished
-package intends to run as root, which no build sandbox can do for you.
-
 ## Installation
 
 > [!IMPORTANT]
 > **Experimental release, not on the AUR.** You install Prolewatch by building it
-> from a checkout. Nothing here vouches for that checkout on your behalf: there
-> is no published maintainer signature for this release, so reviewing the source,
-> or confining it to a disposable Arch system, is the trust decision. The
+> from a checkout. There is no published maintainer signature for this release;
+> review the source or evaluate it on a disposable Arch system. The
 > signed-release path (maintainer key, signed source archive, AUR recipe pinning
 > it in `validpgpkeys`) is implemented and tested but deliberately unpublished
 > until a signed release; see [SECURITY.md](SECURITY.md).
@@ -217,8 +200,7 @@ distributions: they do not include the `Makefile`, packaging scripts, or an
 installer, and copying the binaries alone would omit required policy and shared
 files.
 
-Prolewatch installs four unprivileged binaries and its policy file, and no
-privileged component at all.
+Prolewatch installs four unprivileged binaries and its policy file.
 
 ### 1. Build and install the package
 
@@ -569,9 +551,8 @@ Prolewatch only redirects `yay`. It installs no pacman hook and does not replace
 network prompt, or integration gate**: the package's build code runs as your
 user, with your `$HOME`, your SSH and GnuPG keys, and your network.
 
-That costs one package and one deliberate act, and every later `yay` build stays
-contained. Removing the hook, below, costs every future build until you put it
-back.
+Later `yay` builds remain contained. Removing the hook disables protection for
+all subsequent `yay` builds until it is reinstalled.
 
 #### Deliberately removing the yay hook
 
@@ -594,32 +575,22 @@ prerequisites and reinstall the hook.
 
 ## How this was built
 
-Prolewatch was written with AI assistance, spanning implementation, tests and
-most of this documentation. I know that may seem discouraging for a security
-tool, which is why I am disclosing it here. However, I also know I would never
-have gotten this far this fast without it. In addition, the benefit that
-prolewatch offers is real, and I believe guarding the AUR will only become more
-important.
-
-The design went through many iterations and received much improvement and many
-targeted corrections by me. The project was also challenged using AI. Three
-frontier models (Fable 5, Opus 5 and gpt-5.6-sol) were used adversarially repeatedly
-against the codebase and
-the threat model, and their findings substantially drove what the design is now.
+Prolewatch was written with AI assistance, including implementation, tests, and
+most documentation. I revised the design and code, and used Fable 5, Opus 5,
+and gpt-5.6-sol for repeated adversarial reviews of the codebase and threat model.
 Every release candidate must pass a release gate: race-enabled tests,
 `govulncheck`, an
 import-direction layering check, a privileged-asset invariant, ten deterministic
 security scenarios, and a coverage floor. The isolation claims are measured on a
 real kernel by the probes in `scripts/probes/`.
 
-If you would rather check it than take that on trust,
-[Reviewing Prolewatch](docs/reviewing-prolewatch.md) names the files that carry
-the weight (about a fifth of the code) and the checks you can run yourself.
+[Reviewing Prolewatch](docs/reviewing-prolewatch.md) lists the main security
+boundary files and checks you can run yourself.
 
 ## Limits
 
 Prolewatch reduces the reach of untrusted build code and makes known
-root-integration surfaces visible. Five things it is not:
+root-integration surfaces visible, with these limits:
 
 - **It stops at `pacman -U`.** Once you install the package, Prolewatch is not
   watching it. Nothing here is runtime monitoring.

@@ -7,12 +7,9 @@ involving the Arch User Repository. It is not a claim that AUR packages can be
 made trustworthy by a scanner. AUR packages are user-produced build
 instructions, and Arch explicitly expects users to inspect them.
 
-**Containment is the product; detection describes.** That ordering is
-deliberate. A regular expression or a shell parser recognises a *shape*, and
-shapes can be rewritten — so a control an attacker can rename around does not
-earn the strongest label, however useful it is for telling a user what a package
-does. Almost every incident below executes at one of exactly two sites,
-and each has a control that does not depend on recognising anything:
+Containment restricts execution independently of detection. Pattern matching
+helps explain package behaviour, but attackers can rewrite code to avoid it.
+Most incidents below involve one or both of these execution sites:
 
 - **Build-time code running as the invoking user.** Contained: no real home, an
   enumerated `/etc`, no ambient network, host `/usr` read-only, a private PID
