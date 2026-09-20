@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -365,12 +366,24 @@ func TestContainedProcessCannotReachTheHostNetwork(t *testing.T) {
 		t.Fatalf("the sandbox sees host interfaces: %q", interfaces)
 	}
 
-	// /bin/sh is bash on Arch, so /dev/tcp is the connect primitive that needs no
-	// package installed. A private namespace has its own loopback, so this
-	// reaches nothing even though the host listener is on 127.0.0.1.
-	out, _ := runContained(t, ns, fmt.Sprintf("exec 3<>/dev/tcp/127.0.0.1/%d && echo reached || echo refused", port))
-	if !strings.Contains(out, "refused") {
-		t.Fatalf("the sandbox reached a listener on the host loopback: %q", out)
+	// /dev/tcp requires bash explicitly: Ubuntu's /bin/sh is dash. First
+	// prove the same probe can reach the listener outside the sandbox, so a
+	// broken connect primitive cannot masquerade as network isolation.
+	probe := fmt.Sprintf("if (exec 3<>/dev/tcp/127.0.0.1/%d) 2>/dev/null; then echo reached; else echo refused; fi", port)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hostOutput, err := exec.CommandContext(ctx, "/usr/bin/bash", "-c", probe).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(hostOutput)) != "reached" {
+		t.Fatalf("host network probe did not reach the listener: %v (%s)", err, hostOutput)
+	}
+
+	// The generated probe contains only fixed shell syntax and a numeric port.
+	out, err := runContained(t, ns, "/usr/bin/bash -c '"+probe+"'")
+	if err != nil {
+		t.Fatalf("sandbox network probe failed: %v (%s)", err, out)
+	}
+	if out != "refused" {
+		t.Fatalf("expected the sandbox to refuse the host loopback connection, got: %q", out)
 	}
 }
 
