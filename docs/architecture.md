@@ -5,7 +5,7 @@ This document describes the controls, their rationale, and their limits.
 Measurements link to the relevant tests; `scripts/probes/` holds checks that
 need a real kernel.
 
-## What the attacks actually do
+## Build-time and install-time attacks
 
 The incidents in the [AUR threat model](aur-threat-model.md) involve two
 execution sites:
@@ -54,7 +54,7 @@ Those cases require separate isolation, such as a VM per user.
 
 ---
 
-## The controls
+## Security controls
 
 ### 1. Build containment
 
@@ -134,7 +134,7 @@ confirms the mapping confers nothing else: inside the sandbox `CapEff` is zero,
 `setpriv --reuid 0` fails, a real `chown` to uid 0 outside fakeroot still fails,
 and every file the sandbox creates is owned by the invoking uid on the host.
 
-**`--disable-userns` cannot be kept, but the property it provided can.** Bubblewrap
+**Blocking nested user namespaces.** Bubblewrap
 rejects it without `--unshare-user`, so it is mutually exclusive with
 `--userns <fd>`:
 
@@ -164,9 +164,8 @@ does not regress `fakeroot`. `setns()` to a foreign namespace is not a bypass
 either: the build has an isolated PID namespace and no host `/proc`, so it has
 no route to a foreign namespace descriptor.
 
-This is strictly better than the seccomp route it replaces. There is no
-`clone3`/`ENOSYS` fallback to maintain and no toolchain compatibility matrix to
-validate.
+This avoids a seccomp filter and the associated `clone3`/`ENOSYS` fallback
+handling.
 
 This needs subordinate uid and gid ranges. Existing accounts do not always have
 them; when `prolewatch setup` or `prolewatch doctor` reports them missing, the
@@ -219,8 +218,7 @@ directly attached subnets, which no reserved-range list can recognise, so an
 enumeration failure fails the operation instead of yielding a policy that looks
 complete and is quietly missing exactly those addresses.
 
-**Acquisition runs on the trusted side, and no longer goes through the broker
-at all.**
+**Trusted-side source acquisition.**
 
 A proxy cannot enforce exact source URLs: HTTPS `CONNECT` exposes only the
 host and port. Prolewatch evaluates the `PKGBUILD` in containment, freezes the source
@@ -228,28 +226,25 @@ set, and **fetches the declared non-VCS sources itself**, with its own HTTP
 client, into `SRCDEST`, before the build phases run. `makepkg` then finds them
 present and verifies checksums.
 
-Exactness is now by construction — the request is the declared URL because
-Prolewatch composes it — and three properties follow that the proxy design could
-not offer at all:
+Prolewatch constructs requests from the frozen URL list. This separates
+acquisition from package execution:
 
-- **The acquisition window stops being an execution window.** `makepkg` sources
+- **No package execution during the fetch.** `makepkg` sources
   the `PKGBUILD` on every invocation, `--verifysource` included, so
   author-written top-level shell runs during retrieval;
   `probe-verifysource-execution.sh` established that. With the sources already
   present, that shell runs with **zero egress**. A package with no VCS sources
-  never has an open network while its own code executes. This closes what was an
-  open question, rather than bounding it.
-- **Divergence fails closed structurally.** A `PKGBUILD` can compute `source=` a
+  never has an open network while its own code executes during verification.
+- **Missing sources stop verification.** A `PKGBUILD` can compute `source=` a
   second time and produce different URLs. Measured: `makepkg` then looks for a
   file that was never fetched, finds nothing, and aborts with no network to
-  reach it. There is no allowance to widen and no policy decision to get wrong.
-- **The request-count-and-timing channel closes.** The fetcher's requests are a
+  reach it.
+- **Requests follow the frozen list.** The fetcher's requests are a
   function of the frozen list alone, not of anything package code does. The
-  earlier design could only bound that channel; this one removes it.
+  earlier proxy design allowed package code to influence request counts and timing.
 
-Fetching an attacker-chosen URL from trusted code grants the attacker nothing.
-The URL was consented to at the briefing, the client sends no credentials, and
-the bytes land in the same untrusted workdir either way.
+The URL is consented to at the briefing, the client sends no credentials, and
+downloaded bytes remain untrusted.
 
 Each checkout gets a source directory private to it and to the current `yay`
 transaction. The whole directory is bind-mounted read/write into the untrusted
@@ -260,7 +255,7 @@ frozen set every transaction, so the shared directory was never a cache.
 Directories untouched for a week are pruned, because scoping them means they
 accumulate.
 
-**Every phase resolves that directory, not just the one that filled it.** `yay`
+**Source-directory reuse across phases.** `yay`
 drives `makepkg` as a sequence of separate processes, and only `--verifysource`
 performs the trusted-side fetch; the later ones start with nothing carried over.
 So `prepare`, `build` and `skip` each derive the same transaction- and
@@ -284,7 +279,7 @@ writable directory: `unlink` and rename return `EBUSY`, a write returns `EROFS`,
 and the directory around them stays writable for `makepkg` and for VCS state.
 Read-only binds are applied after writable ones for exactly this reason.
 
-**The allowance is the briefing-time URL set, frozen.** `source=` is not a static
+**Freezing the declared source set.** `source=` is not a static
 declaration; it is an array *computed by attacker-controlled shell* when
 `makepkg` sources the `PKGBUILD`. So every evaluation runs inside containment
 with zero network — including whatever derives the briefing's source list. A
@@ -313,11 +308,10 @@ substitution, indexed or conditional reassignment, and any other unresolved
 shape are left unknown rather than guessed into a finding.
 
 `egress.FreezeDeclaredSources` is the single owner of that set. `Allowance` has
-unexported fields and no other constructor, because the way this requirement
-fails is not that somebody disagrees with it — it is that a second, cheaper
-derivation site appears later.
+unexported fields and no other constructor, preventing callers from supplying
+a separately derived source list.
 
-**Evaluation carries the same kind of resource envelope as the build, tighter.**
+**Resource limits during recipe evaluation.**
 It is arbitrary shell, so it runs in a transient `systemd --user` unit with its
 own memory, CPU, task, runtime and output limits — every one of them a
 floor-capped narrowing of the configured build limits, and the timeout capped at
@@ -346,7 +340,7 @@ parse of an attacker-authored `.SRCINFO` is the worst available outcome — the
 user is shown a short source list, agrees to it, and the entries that did not fit
 are exactly the ones nobody looked at.
 
-**Acquisition budgets are the transaction's, not the source's.** Transfer bytes,
+**Transaction-wide acquisition budgets.** Transfer bytes,
 elapsed time, and the `SRCDEST` filesystem reserve are shared by every fetch in
 one transaction. Applied per source — as they were — a documented 8 GiB ceiling
 is really 8 GiB times however many sources a package cares to declare, which is
@@ -406,7 +400,7 @@ build dependency cannot be frozen in advance. Content is pinned by the `#commit=
 declared host controls the content completely — a property of the `PKGBUILD`,
 belonging in the briefing rather than in a prompt.
 
-**Build phase: default zero egress; the prompt is the anomaly detector.**
+**Build-phase network access requires approval.**
 With acquisition separated out entirely, a mid-build connection attempt is
 inherently unusual, which is what restores the prompt's meaning:
 
@@ -449,7 +443,7 @@ source verification into `prepare()` or `build()` would open the same broad
 endpoint to package code, and popular source hosts are useful exfiltration
 sinks. Under this design, later phases gain no grant from acquisition.
 
-**The tunnel's outer name is checked, not only the dial.** `CONNECT` and SOCKS
+**Tunnel hostname validation.** `CONNECT` and SOCKS
 hand the client a byte pipe to a checked IP address, and an IP is not a host: on
 a shared reverse proxy or CDN one address serves any number of virtual hosts, so
 a client granted `approved.example` could name `attacker.example` and reach a
@@ -459,7 +453,7 @@ therefore read and required to name the approved host, then replayed to the
 upstream unchanged. An approved IP literal is exempt, because no host guarantee
 was displayed for one.
 
-**What that check does and does not cover, precisely.** It reads one of two
+**Validation scope.** It reads one of two
 things: a plaintext HTTP `Host` header, or the server name in the first TLS
 ClientHello. Both are outside the encryption, which is the only reason they can
 be read at all. Once a matching ClientHello has been replayed, the rest of the
@@ -636,7 +630,7 @@ fail the gate with a magic-number error, quarantining the archive with a message
 that said nothing about `PKGEXT`. The package list names the exact output files,
 so the effective policy is read from it and reported before the build runs.
 
-**The registry is a maintained list, not a closed proof.** Expanding a known
+**Registry coverage and limitations.** Expanding a known
 class across every documented search-path root is mechanical, and the two
 independent platform tests do exactly that much: `pacman-conf HookDir` answers
 for hook directories, `systemd-analyze unit-paths` for the unit load path.
@@ -644,12 +638,12 @@ Neither discovers a *class* nobody thought of, and a later review found four
 that had been missed — `/etc/ld.so.preload`, systemd's `system-sleep` and
 `system-shutdown` hooks, and NetworkManager's dispatcher directories — all of
 which run package-installed executables as root with no enabling step. They are
-registered now. Any service on the system can define another, so the honest
-claim is bounded: the registered classes are enumerated structurally and
+registered now. Any service on the system can define another. The
+registered classes are enumerated structurally and
 completely, and a mechanism outside them is outside the guarantee. User-facing
 text says that rather than promising every root-relevant surface.
 
-Two details of the rendering are load-bearing rather than cosmetic. Every line
+Two rendering controls protect the prompt. Every line
 of package-authored content carries a quote marker (`│`), because indentation
 alone is not enough: a scriptlet containing the tool's own prompt text renders
 as a plausible Prolewatch line that merely happens to be indented, and a user
@@ -774,16 +768,11 @@ irrelevant to it. Enumeration is not thoroughness here — without it the gate
 prints "no scriptlet" over the channel an attacker who has read this document
 would actually use.
 
-### 4. The briefing, not the verdict
+### 4. Findings and user decisions
 
-Deterministic inspection stops being a gate and becomes a description. Instead
-of `ALLOW` / `AUTO-ALLOW` / `BLOCK`, produce an honest account of what this
-package will do:
-
-The rendered briefing leads with the change being installed and where the
-material comes from, because those are what make the findings below them
-interpretable, and the outcome line states what happens next rather than
-passing a verdict:
+The briefing shows findings alongside package versions, source provenance,
+changed files, and verification status. The outcome line states whether the
+transaction can continue or needs a decision:
 
 ```text
 Outcome: NEEDS YOUR DECISION
@@ -795,30 +784,18 @@ Contacted: cdn.unknown-host.tld, codeload.github.com, github.com
 Stripped: .INSTALL from foo-bin-1.2.3-any.pkg.tar.zst
 ```
 
-**The context lines come from data the tool already had.** The Lua hook has
-always passed yay's transaction context - target and installed version, install
-reason, devel flag, dependency lists - and the report has always carried a
-manifest diff against the previous scan and per-source binding and verification.
-None of it was rendered. The terminal printed the package base and an internal
-phase name, which describes Prolewatch's own structure rather than the decision
-in front of the user. "`foo` 1.2.3 -> 1.3.0, explicitly installed, PKGBUILD and
-`.install` changed, one source is a mutable git ref" is a thing a person can
-act on; "`foo / post`, 3 sources - github.com (x2)" is not, and the same
-critical finding reads differently under each.
+**Transaction context.** The Lua hook passes yay's target and installed
+versions, install reason, devel flag, and dependency lists. The report adds a
+manifest diff against the previous scan and per-source binding and verification
+status. These fields give the user context for the findings.
 
-**Phases are an implementation boundary, not a presentation model.** One
-ordinary package produced four full briefings - the hook's pre scan, the hook's
-post-download scan, the wrapper's rescan after `prepare`, and the artifact
-review - and three of them said "NO BLOCKING FINDINGS" about a package nobody
-had a question about. Different bytes exist at different moments, so the
-separate scans are correct; printing a full report for each of them is not what
-that correctness requires. A phase that found nothing, needs no answer, and is
-not the last word before installation now renders as one line carrying the
-change and the report id. The artifact phase always renders in full: it is the
-briefing shown immediately before `pacman` receives the archive, and that is
-the moment to be complete rather than brief.
+**Briefing length by phase.** Separate scans inspect the checkout, downloaded
+sources, the result of `prepare`, and the built artifact. An intermediate phase
+with no findings or required decision prints one line with the change and report
+id. The artifact briefing is always shown in full before `pacman` receives the
+archive.
 
-**An unchanged finding is decided once per transaction, not once per scan.**
+**Reusing decisions for unchanged findings within a transaction.**
 The recipe gate must remain a decision boundary because it runs before source
 acquisition; deferring every decision until sources arrive would fetch material
 from a recipe the user had already rejected. After an exact recipe-snapshot
@@ -848,14 +825,10 @@ are still fully scanned and, when configured, reviewed by AI, but neither static
 mechanism proves all cross-file behavior. Avoiding a repeated byte-identical
 prompt is a fatigue tradeoff, not a claim that the later context is equivalent.
 
-**A network prompt names the request.** "The build is asking to reach
-`crates.io:443`" is not answerable during a nine-package upgrade. The prompt
-now names the package and the phase, and says whether the destination appears
-anywhere in that package's declared sources - which is the single most useful
-fact about a mid-build connection, and the one only Prolewatch is in a position
-to state. It explains and never decides: a declared host still has to be
-approved, and the resulting `host:port` grant lasts only for the current
-makepkg phase.
+**Network-prompt context.** The prompt names the destination, package, and
+phase, and says whether the destination appears in the package's declared
+sources. A declared host still requires approval. The resulting `host:port`
+grant lasts only for the current makepkg phase.
 
 Both package-review decision kinds ask the same way — `[y] Continue · [N]
 Abort`, with Enter defaulting to abort — and the severity lives in the briefing
@@ -864,10 +837,9 @@ phase selection and an attested reviewer remains available, the same prompt
 also offers `[r] Run AI review now`. That action reruns the complete scan and
 evaluation, writes a new exact-snapshot report, and refreshes the question; it
 never edits old evidence or changes the configured phase set.
-There is deliberately no typed-word confirmation. Recognised findings describe
-rather than block, so this prompt fires on ordinary packages, and a ceremony
-repeated on ordinary packages becomes muscle memory. Typing a word by reflex is
-not a more considered decision than pressing a key by reflex.
+The prompt uses a single-key response. It can appear for ordinary packages,
+so requiring a typed confirmation word would add repeated input without
+changing the scope of the approval.
 
 What bounds a mistake is the shape of the approval, not the shape of the
 question: it covers this exact content and this policy, once, and it can never
@@ -951,18 +923,16 @@ suspicious package it would teach the wrong reflex, and recovery guidance that
 hands over a bypass is not recovery guidance. A regression test binds all four
 strings against every class at once.
 
-### 5. AI review as enrichment
+### 5. Optional AI review
 
-Retained, **default off**, and never able to clear a package. It contributes
+AI review is **off by default** and cannot clear deterministic findings. It contributes
 cross-file context a rule cannot express, and it moves an outcome in one
 direction only: a confident "allow" changes nothing, while anything else turns
 an otherwise-allowed package into one that needs the user's decision. The
 configured confidence is a threshold on the *allow*, not on the block — an
 "allow" below `review.minimum_confidence` blocks, as does any non-allow verdict,
-a detected prompt injection, a coverage note, or a high or critical finding. "Never a gate" was the wrong
-phrase for that and is not used any more — the accurate statement is that AI
-review cannot let anything through, and can ask a question that would not
-otherwise have been asked. A provider outage, a malformed response, or a
+a detected prompt injection, a coverage note, or a high or critical finding.
+AI can therefore require an additional user decision. A provider outage, a malformed response, or a
 missing credential degrades to a briefing without an AI section, and never
 blocks an install.
 
@@ -971,7 +941,7 @@ and only the current configuration schema is accepted. Compatibility begins at
 the first published release; pre-release schema reconstruction was removed
 rather than preserving parsers for configurations no user release created.
 
-**The attestation says what was observed, and no more.** CLI Doctor canaries
+**Attestation scope.** CLI Doctor canaries
 establish that the outer sandbox hides a host sentinel and starts with an empty
 workspace, and that the provider recognises a prompt-injection fixture. The
 Ollama pilot has different evidence: fixed loopback transport, local model
@@ -1055,11 +1025,11 @@ flowchart LR
     class SUDO,HOST result;
 ```
 
-There is no root-owned box in this diagram. That is the point.
+All Prolewatch components in this diagram run without root privileges.
 
 ---
 
-## What is deliberately absent
+## Privileged components excluded by design
 
 Prolewatch installs **no privileged component**. This is a hard invariant, not
 a current limitation:
@@ -1072,13 +1042,9 @@ a current limitation:
   `LocalFileSigLevel` edit;
 - no modification to the final `sudo pacman -U` step.
 
-Installation becomes `yay -S prolewatch && prolewatch setup`. Nine steps become
-one. (That funnel is the design target and the recipe implementing it is
-tested; the current tree targets `0.12.0` as the first public experimental
-release, to be shipped unsigned and off-AUR and installed from a local package
-build. The first release therefore trades the short funnel for not publishing a
-signing key before the signing process is ready.) For a tool whose value proposition is "your AUR builds are safer," the
-install funnel was the existential risk, not the threat model.
+The intended AUR workflow is `yay -S prolewatch` followed by `prolewatch setup`.
+Publication is pending. See [Installation](../README.md#installation) for the
+current signed-source release plan and development installation instructions.
 
 `setup` rather than `install-hook` because writing the hook is not the same as
 being ready. The package installs its configuration as a pacman backup file,
@@ -1087,8 +1053,8 @@ before changing `yay`, installs the hook only after that succeeds, and verifies
 the installed bytes. A failed preflight therefore leaves the package manager
 unchanged.
 
-**What replaced the sealed artifact store** is process lifecycle, not file
-immutability. Two independent mechanisms kill the build tree before the install
+**Build-process cleanup before installation.** Two independent mechanisms
+kill the build tree before the install
 step, and the order matters because only one of them is measured.
 
 The **primary** mechanism is the PID namespace: the sandbox runs under
@@ -1106,8 +1072,7 @@ human about to type their sudo password.
 
 ---
 
-**The gate needs an answer, not a fallback** — for the surfaces that actually
-need one. It is the only decision taken immediately before `pacman` runs
+**Explicit integration decisions.** The gate is the final decision before `pacman` runs
 package code as root, and the artifact scan does not stand in for it: an
 `artifact-integration` finding is medium severity and blocks nothing. So no
 terminal, end of input, or a run of unrecognised answers stops the install
@@ -1116,7 +1081,7 @@ permissive option available and indistinguishable, to the caller, from a user
 who chose it. Keeping the surfaces remains the ordinary outcome; it just has to
 be answered, and one Enter answers it.
 
-**Which surfaces those are is a property of the registry, not of the prompt.**
+**Activation categories.**
 Each entry records an activation: `automatic` runs package-authored code as
 root, or grants privilege, with no further step by anyone — the scriptlet, a
 `libalpm` hook, a system generator, `sysusers.d`, `tmpfiles.d`, a udev rule, a
@@ -1127,11 +1092,8 @@ and a polkit *action* declaration, a D-Bus policy file, or a PAM module nothing
 references executes nothing at all. Only `automatic` is a question; the rest is
 printed and passed.
 
-This is a deliberate reduction in how often the user is interrupted, and it is
-the direction the product's own premise points. Containment exists because
-people cannot adjudicate arbitrary build code; a gate that asked the same
-unanswerable question on every package carrying a service unit was training the
-reflex that would then be applied to the scriptlet. `RequiresDecision` is
+This classification reduces repeated prompts for ordinary service units.
+`RequiresDecision` is
 written as "not one of the three that may be listed" so that a registry entry
 added without an activation is a question rather than a silently downgraded
 root-execution surface.
@@ -1230,7 +1192,7 @@ requires a content-bound report with sandbox enforcement. It has no recorded
 result yet and remains a release gate. The live redirect probe is deliberately
 not a CI gate.
 
-**`probe-contained-makepkg.sh` — containment is viable, with one correction.**
+**`probe-contained-makepkg.sh` — build compatibility and UID mapping.**
 A three-way comparison of no sandbox, Bubblewrap as the current code configures
 it, and Bubblewrap joining a pre-mapped user namespace:
 
@@ -1243,7 +1205,7 @@ it, and Bubblewrap joining a pre-mapped user namespace:
 | Does `install -o root -g root` work under Bubblewrap's own namespace? | **No — `EINVAL`** |
 | Does it work when uid 0 is mapped from `/etc/subuid`? | Yes |
 
-**`probe-integration-gate.sh` — the gate is implementable, but not as a `yay` hook.**
+**`probe-integration-gate.sh` — hook placement and archive rewriting.**
 
 | Question | Result |
 | --- | --- |
@@ -1259,8 +1221,7 @@ it, and Bubblewrap joining a pre-mapped user namespace:
 | Can one rewrite strip all of them and still parse? | Yes |
 | Does the rewrite preserve `uid=0` in `.MTREE`? | Only under `fakeroot` |
 
-**`probe-namespace-properties.sh` — the construction is safe, but one claimed
-property is not achievable.**
+**`probe-namespace-properties.sh` — capabilities and nested namespaces.**
 
 | Question | Result |
 | --- | --- |
@@ -1275,8 +1236,7 @@ property is not achievable.**
 | Can the build raise the limit back? | No |
 | Does the clamp regress `fakeroot`? | No |
 
-**`probe-verifysource-execution.sh` — the acquisition window is an execution
-window.**
+**`probe-verifysource-execution.sh` — PKGBUILD execution during verification.**
 
 | Question | Result |
 | --- | --- |
@@ -1284,7 +1244,7 @@ window.**
 | Do `prepare()` / `build()` / `package()`? | No |
 | Does top-level `PKGBUILD` code run? | **Yes — `makepkg` sources the file** |
 
-**`probe-stream-filter.sh` — the rewrite verifies clean once installed.**
+**`probe-stream-filter.sh` — installed-package integrity after rewriting.**
 
 | Question | Result |
 | --- | --- |
@@ -1294,7 +1254,7 @@ window.**
 | Are emptied directories pruned? | Yes — 13 members to 5 |
 | Did an `-Qp` parse check catch the path bug this found? | **No — only `-Qkk` did** |
 
-**`probe-integration-surfaces.sh` — the shipping registry and archive pipeline agree.**
+**`probe-integration-surfaces.sh` — registry and archive consistency.**
 
 | Question | Result |
 | --- | --- |
@@ -1302,7 +1262,7 @@ window.**
 | Is every enumerated member classified by activation? | Yes |
 | Can all fixture members be stripped while leaving a parseable package? | Yes |
 
-**`probe-redirect-chains.sh` — declared fetches do cross hosts.**
+**`probe-redirect-chains.sh` — cross-host source redirects.**
 
 | Fetch | Measured chain |
 | --- | --- |

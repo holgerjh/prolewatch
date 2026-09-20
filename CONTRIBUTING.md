@@ -14,7 +14,7 @@ outside patches is settled.
 Bug reports, security reports, reproductions, and design feedback remain welcome
 and require no contributor agreement.
 
-## What is most useful
+## Useful contributions
 
 Reports that contradict the claims in
 [docs/architecture.md](docs/architecture.md) or
@@ -112,7 +112,7 @@ which requires a real PAM login — `docker exec` does not create one — and
 login gets both for nothing, and an acceptance record from a container you had
 to grant extra privileges to is weaker evidence than one from a plain VM.
 
-### The VM
+### VM setup
 
 Use the **basic** image, not the cloud image: it ships with the user `arch`
 (password `arch`) and sshd already running, so there is no cloud-init, no seed
@@ -121,7 +121,7 @@ image, and no `cloud-localds`.
 ```bash
 curl -LO https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-basic.qcow2
 
-# the overlay is the disposability: delete it to reset, recreate in a second
+# Use an overlay so the test system can be reset without changing the base image.
 qemu-img create -f qcow2 -F qcow2 -b Arch-Linux-x86_64-basic.qcow2 pw.qcow2 20G
 
 qemu-system-x86_64 -enable-kvm -m 8G -smp 4 \
@@ -165,7 +165,7 @@ mkdir -p ~/tmp && export TMPDIR=~/tmp
 is missing — and under `make acceptance-probes` a skip is a failure. The VM
 also needs outbound HTTPS to GitHub for the probe's checksum-bound source.
 
-### Getting the tree in without pushing
+### Copying the checkout to the VM
 
 ```bash
 rsync -a --delete --exclude=/build/ --exclude=/dist/ \
@@ -178,7 +178,7 @@ enumerates files with `git ls-files`; without it `make arch-package` fails.
 `git bundle create … --all` plus `scp`, or `tar` piped over `ssh`, work when
 rsync is not installed on both ends.
 
-### Install and run the gate
+### Installation and acceptance tests
 
 ```bash
 cd ~/prolewatch
@@ -199,7 +199,7 @@ Run `setup` from a fresh SSH login. `su` and `sudo -iu` may not create the PAM
 session even with lingering enabled, and `setup` fails before touching `yay`
 when the session cannot enforce the resource envelope.
 
-### The acceptance record
+### Recording acceptance results
 
 `make acceptance-probes` sets `PROLEWATCH_PROBE_STRICT=1`, under which a
 skipped probe is a failure — a probe that never ran is not evidence. Keep the

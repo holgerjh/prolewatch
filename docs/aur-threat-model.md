@@ -24,7 +24,7 @@ Most incidents below involve one or both of these execution sites:
 Detection still runs, and it is how a user learns what a package will do. It
 does not decide.
 
-## Status language
+## Coverage labels
 
 The labels below describe what kind of control exists, not how alarming the
 technique is. The distinction that matters is whether a property is **enforced**
@@ -42,7 +42,7 @@ or **recognised**.
 There is no 🟢 anywhere in this document for a control that works by matching
 attacker-authored text. If a claim depends on a pattern, it is 🟡 at best.
 
-## What has happened
+## Reported incidents
 
 The incidents below are useful because they show different failure modes. Counts are kept in the language used by the source: a research estimate is not presented as an Arch-confirmed count. Attack technique IDs link each incident to the relevant controls and residual-risk analysis in [Technique coverage](#technique-coverage).
 
@@ -90,7 +90,7 @@ polkit — shows bounded bodies for automatic surfaces, lists deferred and passi
 | <a id="t14"></a>**T14** | Resource-exhaustion package build | A transient `systemd --user` unit hard-bounds memory, CPU, tasks, runtime and per-file size for **every** execution of package-authored code, PKGBUILD evaluation included. Acquisition and scan budgets fail closed; a free-space reserve backs the monitored workspace limits; nested user namespaces are blocked by a ucount clamp the build cannot raise. | 🟡 **Partially enforced** | Workspace byte and inode counts are not filesystem quotas. While `makepkg` makes `pkg/` execute-only, activity below it is invisible to recursive accounting until permissions return; a hostile build can exceed the configured workspace totals during that interval. |
 | <a id="t15"></a>**T15** | Kernel, firmware, hardware, official repository, build-toolchain, provider-CLI, or Prolewatch compromise | `doctor` verifies containment end to end — it builds the namespace and checks that capabilities are empty, the clamp holds, and the home is empty — rather than checking that tools are installed. | 🔴 **Not addressed** as an originating threat | These are explicit trust boundaries. Prolewatch cannot use itself to prove the integrity of every component below it. |
 
-## Executable evidence
+## Regression scenarios
 
 The repository contains [reproducible, harmless security
 scenarios](security-scenarios.md) for the claims that can be meaningfully
@@ -158,7 +158,7 @@ true on paper and false in use.
 Changing mode changes the policy fingerprint, so old markers and approvals
 cannot silently authorise the new policy.
 
-## Operational interpretation
+## Operating assumptions
 
 For a meaningful result, all of these assumptions must hold:
 

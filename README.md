@@ -1,7 +1,7 @@
 # Prolewatch
 
 <p align="center">
-  <img src="docs/images/prolewatch-logo-community-shield.png" alt="Prolewatch" width="620">
+  <img src="docs/images/prolewatch-logo.png" alt="Prolewatch logo" width="620">
 </p>
 
 <p align="center">
@@ -33,20 +33,22 @@ service account, `sudoers` entry, or setuid binary. The optional local Ollama
 pilot can use a daemon you separately install and operate as part of your local
 trusted computing base.
 
-**Prerelease, not released as an AUR package yet**
+**Experimental AUR release candidate — publication pending**
 
-There is no public release yet. The current tree targets `0.12.0` as the first
-public experimental release.
+The current tree targets `0.12.0` as the first public experimental release for
+x86-64 Arch Linux. Publication remains pending until its signed source archive
+has passed the disposable-system acceptance run and the recipe has been pushed
+to the AUR.
 
 > [!WARNING]
 > Prolewatch is experimental and has not been independently audited. It does not
 > certify AUR packages as safe.
-> See [How this was built](#how-this-was-built) and, if in doubt, start on an
+> See [Development and testing](#development-and-testing) and, if in doubt, start on an
 > isolated Arch Linux system before relying on it.
 
-## See it in action
+## Examples
 
-### A guarded transaction
+### A contained AUR build
 
 Prolewatch reviews the recipe, prompts for network access, and contains
 package-controlled code during source acquisition and the build. Installation
@@ -56,9 +58,9 @@ uses your own `sudo pacman -U`.
   <a href="docs/images/prolewatch-basic.gif"><img src="docs/images/prolewatch-basic.gif" alt="Animated terminal demo of Prolewatch reviewing catclock-git, prompting before network access, and running makepkg in containment." width="1105"></a>
 </p>
 
-<p align="center"><em>Basic guarded transaction</em></p>
+<p align="center"><em>Contained AUR build</em></p>
 
-### What the package intends to run as root
+### Reviewing privileged package integration
 
 This `gtk2` package ships an install scriptlet and a pacman hook. Prolewatch
 shows their code before handing the archive to `pacman`, and lets you keep or
@@ -88,7 +90,7 @@ inspection, and puts bounded AI guidance beside each exact finding.
 Five controls sit between `yay` resolving a transaction and your own
 `sudo pacman -U`.
 
-### 1. Containment first
+### 1. Build isolation
 
 Package-controlled code runs in a user namespace with a temporary home,
 enumerated `/etc`, read-only `/usr`, no capabilities, private process and
@@ -103,7 +105,7 @@ A separate build account also isolates your personal files, but needs additional
 controls for persistent state, network access, and resource use. Prolewatch
 applies those controls within your existing `yay` workflow.
 
-### 2. Sources arrive before the package can speak
+### 2. Source downloads and network access
 
 Prolewatch evaluates the `PKGBUILD` inside containment, freezes its declared
 source set, and fetches those sources on the trusted side before the build
@@ -116,7 +118,7 @@ destination; a later phase gets a fresh broker and asks again.
 Cargo and Go detection adds context to that question and never grants access on
 its own.
 
-### 3. Inspection at three points
+### 3. Recipe, source, and package inspection
 
 Prolewatch inventories the AUR checkout, the sources that arrived, and the
 finished package, then reports recognised behavior at full severity. Structurally
@@ -166,7 +168,7 @@ monitoring.
 Turning it on, choosing gates, and the local models that passed the safety
 corpus are in [Turn on AI review](#4-turn-on-ai-review).
 
-### 5. The root gate
+### 5. Privileged-integration review
 
 Before installation Prolewatch enumerates every known root-relevant surface in
 the finished `.pkg.tar.zst`, and shows all of them. It *stops* only for the ones
@@ -186,23 +188,60 @@ terminal, so an unattended install stops there.
 ## Installation
 
 > [!IMPORTANT]
-> **Experimental release, not on the AUR.** You install Prolewatch by building it
-> from a checkout. There is no published maintainer signature for this release;
-> review the source or evaluate it on a disposable Arch system. The
-> signed-release path (maintainer key, signed source archive, AUR recipe pinning
-> it in `validpgpkeys`) is implemented and tested but deliberately unpublished
-> until a signed release; see [SECURITY.md](SECURITY.md).
+> **AUR publication is pending.** The intended `0.12.0` release uses a
+> maintainer-signed, vendored source archive and an AUR recipe pinned to the
+> maintainer fingerprint. Until the package page is live and this notice is
+> updated, use the development installation below from a checkout you have
+> reviewed. See [SECURITY.md](SECURITY.md) for the trust boundary.
 
-The supported installation target for the first release is x86-64 Arch Linux,
-from a source checkout you have reviewed. The Linux amd64 binaries and archives
-attached to the GitHub release are verification artifacts, not installable
-distributions: they do not include the `Makefile`, packaging scripts, or an
-installer, and copying the binaries alone would omit required policy and shared
-files.
+The supported target for the first release is x86-64 Arch Linux. The Linux
+amd64 binaries and binary archive attached by GitHub Actions are verification
+artifacts, not installable distributions: they do not include the `Makefile`,
+packaging scripts, or an installer, and copying the binaries alone would omit
+required policy and shared files. Their checksums and GitHub attestations cover
+those workflow-built artifacts. The separately uploaded AUR source archive is
+verified by the checksum and GPG signature in the recipe.
 
 Prolewatch installs four unprivileged binaries and its policy file.
 
-### 1. Build and install the package
+### 1. Install the package
+
+#### Signed AUR release, after publication
+
+The release will publish these separate assets at the `v0.12.0` GitHub
+prerelease:
+
+- `prolewatch-0.12.0.tar.gz`
+- `prolewatch-0.12.0.tar.gz.sig`
+- `prolewatch-release-key.asc`
+
+The automatic GitHub "Source code" downloads and the workflow-built binary
+archive are different files and cannot replace the signed source archive.
+
+The full release-key fingerprint is:
+
+```text
+296E983E7120909958BD38E557F1F87148E02B27
+```
+
+After publication, download the public key from the release, inspect its full
+fingerprint, compare it with both documents through a separate path, and import
+it as the normal build user:
+
+```bash
+curl --fail --location --remote-name \
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.0/prolewatch-release-key.asc
+gpg --show-keys --with-fingerprint prolewatch-release-key.asc
+gpg --import prolewatch-release-key.asc
+yay -S prolewatch
+```
+
+No `pacman-key` import or GPG ownertrust change is needed. The recipe's
+`validpgpkeys` entry requires the exact release fingerprint when `makepkg`
+checks the detached source signature. Importing the public key only makes that
+verification possible; comparing the fingerprint is the identity check.
+
+#### Development installation from a reviewed checkout
 
 The build produces an ordinary Arch package, which you sign with a key you
 generate yourself. That signature authenticates *your own build artifact* to
@@ -219,7 +258,7 @@ Run as the normal `yay` user, from an interactive shell:
 make dev-install
 ```
 
-That is the whole step. It creates the signing key if there is not one, builds
+The command creates the signing key if there is not one, builds
 and signs the package, verifies that signature directly against the private
 development key home, checks the installed-file allow-list, and gives only the
 final `pacman -U` invocation that key home. Re-running reuses the existing key,
@@ -234,14 +273,16 @@ configuration is kept as `/etc/pacman.conf.prolewatch-bak`. Be aware that this
 policy rejects unsigned local packages, including normal `makepkg` output, so
 ordinary AUR installs fail until it is relaxed again.
 
-Prolewatch's own build is not protected by Prolewatch. It is installed before any
-of its controls exist, and for this release no maintainer signature covers that
-first build either. Containment begins with the next AUR transaction.
+Prolewatch's own build is not protected by Prolewatch. It is installed before
+any of its controls exist. On the AUR path, the release signature authenticates
+the source for that bootstrap build; on the development path, the local
+signature authenticates only the package you built. Neither signature contains
+the build. Containment begins with the next AUR transaction.
 
 <details>
 <summary><strong>Doing it by hand instead</strong></summary>
 
-Reasonable for a security tool, and worth reading once either way.
+The individual build, signature-verification, and installation steps are below.
 
 Create the signing key once. `tty` must print a device path, not
 `not a tty`. Use `pinentry-tty` rather than `pinentry-curses`: the curses dialog
@@ -372,7 +413,7 @@ IDs, and computing a free range before invoking `sudo` creates a race. The
 delegation permits mappings inside user namespaces and grants no host root or
 capabilities. `doctor` exercises the real namespace before setup continues.
 
-### 3. Hook it into yay
+### 3. Set up yay integration
 
 ```bash
 prolewatch setup
@@ -411,20 +452,19 @@ No phase completely replaces another. Sources preserve the readable
 implementation before the build, while the artifact shows which activation
 paths and payloads are actually shipped.
 
-If you are paying local latency for AI, enable the gates in this order:
+To limit local AI review time, enable the gates in this order:
 
-1. **`artifact`, the one that earns its cost.** Containment already bounds what
-   the build itself can reach, so what remains is what gets installed and runs
-   as root from then on. Only this gate sees that, and a package usually ships
-   little readable code, so it is also cheap.
-2. **`sources`, the one you buy deliberately.** It is the only gate that
-   catches what disappears into a compiled binary, and by far the most
-   expensive: the largest and least structured input in the transaction. For
+1. **`artifact`: review the installed payload.** This gate sees the finished
+   package, including privileged integration. A package usually ships little
+   readable code, so this review is relatively quick.
+2. **`sources`: review upstream code before compilation.** This gate can find
+   behavior that is harder to inspect in a compiled binary. It processes the
+   largest and least structured input in the transaction. For
    the local models listed below, the provisional 8 MiB reference projects 13
    to 18 minutes, where recipe and artifact take seconds.
-3. **`recipe`, the cheapest and the smallest gain.** Deterministic rules are
-   written for `PKGBUILD` shapes and are strongest exactly here, so routine AI
-   adds the least.
+3. **`recipe`: add AI review of the build recipe.** This is a small input, but
+   deterministic rules already cover many common `PKGBUILD` patterns, so AI
+   review generally adds less here.
 
 A gate without AI keeps deterministic detection and loses only the semantic
 findings and context the model would have added.
@@ -434,7 +474,7 @@ When a disabled gate needs a manual decision, its prompt offers
 then the question again from the refreshed evidence. It changes no
 configuration and does not enable that gate for future packages.
 
-#### Which local models are usable
+#### Local model results
 
 No model is trusted by default: each one must pass a fixed seven-case safety
 corpus bound to its exact digest. A case passes when the model reaches the
@@ -474,7 +514,7 @@ Measured on an RTX 5080 (16,303 MiB VRAM) with Ollama 0.32.13, one fresh model
 load per case. Full table, residency, throughput and recommended settings:
 [AI review](docs/ai-review.md#local-pilot-profiles).
 
-#### Everyday profiles
+#### Configuration examples
 
 Artifact review only, with the model kept warm across adjacent batches:
 
@@ -517,10 +557,10 @@ Changing which gates AI runs at does not invalidate the stored quality
 evidence. Changing the model, runtime, context, reasoning, prompt, schema,
 review batch size or guidance threshold does, and needs a new probe.
 
-### If Prolewatch stops a package you want
+### Handling blocked or failed builds
 
-Most stops have a way through that keeps containment on. Reach for the narrowest
-one that fits. There is no global override and no setting that turns enforcement
+Most stops can be resolved while keeping containment enabled. Use the option
+that matches the reported cause. There is no global override or setting that turns enforcement
 off; configurations carrying the retired `overrides.allow_unsafe` key are
 rejected.
 
@@ -554,7 +594,7 @@ user, with your `$HOME`, your SSH and GnuPG keys, and your network.
 Later `yay` builds remain contained. Removing the hook disables protection for
 all subsequent `yay` builds until it is reinstalled.
 
-#### Deliberately removing the yay hook
+#### Removing the yay hook
 
 If a yay or makepkg update produces a command shape this Prolewatch release does
 not support, first run `prolewatch doctor` and update or repair Prolewatch. As an
@@ -573,7 +613,7 @@ Do not use it to bypass a finding or a structural failure. Once the
 compatibility problem is resolved, run `prolewatch setup` to recheck the
 prerequisites and reinstall the hook.
 
-## How this was built
+## Development and testing
 
 Prolewatch was written with AI assistance, including implementation, tests, and
 most documentation. I revised the design and code, and used Fable 5, Opus 5,

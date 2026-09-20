@@ -1,4 +1,4 @@
-# Maintainer: Prolewatch maintainers
+# Maintainer: Holger Heinz <79228197+holgerjh@users.noreply.github.com>
 
 pkgname=@PKGNAME@
 pkgver=@PKGVER@

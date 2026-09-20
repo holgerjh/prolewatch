@@ -105,13 +105,20 @@ Release ${version} prepared in ${dist_dir}
   prolewatch-${version}.tar.gz.sig  signed by ${signing_key}
   PKGBUILD, .SRCINFO                for the AUR repository
 
-Publish in this order, because the recipe names the archive by URL:
-  1. tag v${version} and upload both archive files to that release;
-  2. push PKGBUILD and .SRCINFO to the AUR repository;
-  3. on a clean Arch system, import and trust the key, then run
-     'yay -S prolewatch' and 'prolewatch setup'.
+Publish and test in this order, because the recipe names the archive by URL:
+  1. tag v${version}, push it, and wait for the release workflow to create the
+     GitHub prerelease;
+  2. upload both archive files and the exported public key without changing
+     the signed files;
+  3. on a clean Arch system, copy only PKGBUILD and .SRCINFO, import the public
+     key after comparing its fingerprint, then run 'makepkg --verifysource',
+     'makepkg -si', 'prolewatch doctor --no-probe', 'prolewatch setup', and the
+     acceptance probes from a checkout of the same tag;
+  4. only after that acceptance run passes, push PKGBUILD and .SRCINFO to the
+     AUR repository.
 
-Step 3 is the acceptance run, not a formality: it is the only step that
-exercises installation ownership, pacman trust, subordinate IDs and hook
-activation together.
+Importing the public key needs no ownertrust or pacman-key change. The clean
+Arch acceptance run is the only step that exercises the published download,
+installation ownership, subordinate IDs, hook activation, and real yay
+interception together.
 SUMMARY

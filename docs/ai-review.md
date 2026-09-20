@@ -283,10 +283,10 @@ models weeks apart. Pin a full model identifier in `providers.anthropic.model`
 if you need reports to identify a fixed model. The `codex` default is
 already a pinned identifier and does not have this property.
 
-## Where AI review is spent
+## Review phases
 
-Prolewatch inspects a package at three points, and aims AI review at the two
-that carry the most for it to read.
+Prolewatch inspects a package at three points. When AI review is enabled, the
+default phase selection covers fetched sources and the built package.
 
 | Gate | What it holds | AI review |
 | --- | --- | --- |
@@ -294,19 +294,17 @@ that carry the most for it to read.
 | **sources**, before the build runs | The fetched upstream code. The largest and least structured input in the transaction. | Selected by `review.phases` (on by default); otherwise available once through `[r]` at a manual decision |
 | **built package**, before `pacman` installs it | What the build produced, including everything that would run as root. | Selected by `review.phases` (on by default); otherwise available once through `[r]` at a manual decision |
 
-The recipe gate is normally skipped by AI, not unguarded. Deterministic
-inspection runs at all three gates and is strongest on `PKGBUILD` shapes. If a
+Deterministic inspection runs at all three gates, including recipe review,
+and is strongest on `PKGBUILD` shapes. If a
 finding opens a manual-decision prompt in a disabled gate, `[r] Run AI review
 now` lets you choose whether to spend the extra call. The fresh report says
 `requested interactively`, so it cannot be mistaken for routine review. AI
 cannot clear a deterministic finding.
 
-Clean recipes remain skipped by default. Reviewing every recipe in a transaction
-that pulls ten dependencies would add a third of the waiting and a third of the
-quota, spent on the input with the least for a model to say.
+Recipes without findings remain excluded from AI review by default. Enabling
+routine recipe review adds a provider call for each recipe, including dependencies.
 
-Reports say which applies, so a skipped gate is never something you have to
-infer:
+Reports state why AI review was skipped:
 
 ```text
 AI review
@@ -491,7 +489,7 @@ Both configurations need one `prolewatch doctor --probe-llm-quality` after the
 change, because model, context and reasoning are all part of the attested
 fingerprint.
 
-### What the model choice constrains elsewhere
+### Model limits and configuration
 
 Three settings behave differently once a specific model is chosen.
 
@@ -551,7 +549,7 @@ verify context-refusal behavior, does not check byte/token calibration, and
 produces no shareable record or suitability grade. Use it to narrow a field of
 candidates, then run the full benchmark on the one you intend to keep.
 
-### Produce a shareable result
+### Exporting benchmark results
 
 Configure the candidate model and run:
 

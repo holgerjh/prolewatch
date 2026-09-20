@@ -3,47 +3,57 @@
 Prolewatch is experimental security software and has not received an
 independent security audit. It was written with AI assistance and its
 maintainer has not yet read all of it line by line; see
-[How this was built](README.md#how-this-was-built). Reports that could affect its inspection,
+[Development and testing](README.md#development-and-testing). Reports that could affect its inspection,
 containment, privilege, artifact-integrity, or fail-closed guarantees are
 especially important.
 
 ## Supported versions
 
-There is no public release yet. The current tree targets `0.12.0` as the first
-public experimental release. Security fixes are made against the current
-default branch; older checkouts may no longer match the documented security
-boundary, though reports remain useful when the behavior also reproduces on
-current code.
+The current tree targets `0.12.0` as the first public experimental release for
+x86-64 Arch Linux. AUR publication is pending its signed-source acceptance run.
+Security fixes are made against the current default branch; older checkouts may
+no longer match the documented security boundary, though reports remain useful
+when the behavior also reproduces on current code.
 
-## How this release is distributed, and where the trust decision is
+## Release distribution and verification
 
-**This release is not on the AUR and carries no maintainer signature.** It is
-installed by building the package from a checkout, signed with a key the
-installing user generates themselves (see
-[Installation](README.md#installation)). That local signature authenticates the
-built artifact to `pacman`. It says nothing about the source it was built from.
+**AUR publication is pending.** Until the package page is live, install from a
+reviewed checkout using the development path in
+[Installation](README.md#installation). Its local package signature
+authenticates the artifact to `pacman`; it says nothing about the source's
+origin or safety.
 
-Review the checkout or evaluate it on a disposable Arch system. The development
-signature and installed-file allow-list verify the local build artifact, not
-the source's origin or safety.
+### Signed AUR source path
 
-### The signed path exists but is deliberately unpublished
+The `0.12.0` release will publish `prolewatch-0.12.0.tar.gz`, its detached
+`.sig`, and `prolewatch-release-key.asc` on the `v0.12.0` GitHub prerelease.
+The source archive is deterministic and includes vendored Go dependencies. The
+AUR recipe fetches those exact assets, checks the archive SHA-256, and pins the
+signing key through `validpgpkeys`.
 
-The signed-release tooling is implemented and tested. When a signed release is
-made, this section will carry the full 40-character maintainer fingerprint and
-`packaging/arch/PKGBUILD.in` will carry the same value in `validpgpkeys`. The
-release artifacts are `prolewatch-<version>.tar.gz` and its detached `.sig`,
-attached to the `v<version>` GitHub release; `scripts/source-archive.sh` builds
-the archive deterministically and vendored, so the same tree yields the same
-SHA-256.
+The full 40-character maintainer fingerprint is:
 
-`makepkg` verifies the signature
-before running any of the recipe's build steps, and the build then compiles only
-what is inside the verified archive: `-mod=vendor` with `GOPROXY=off` means no
-dependency is fetched while building. Installation never edits the pacman
-keyring or `LocalFileSigLevel`. Once `validpgpkeys` names a fingerprint, stock
-`makepkg` accepts a signature from that fingerprint independently of local GPG
-ownertrust — verified against
+```text
+296E983E7120909958BD38E557F1F87148E02B27
+```
+
+Once published, download the public key from the release, display its
+fingerprint, compare it with this document through a separate path, and import
+it into the normal build user's keyring:
+
+```bash
+curl --fail --location --remote-name \
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.0/prolewatch-release-key.asc
+gpg --show-keys --with-fingerprint prolewatch-release-key.asc
+gpg --import prolewatch-release-key.asc
+```
+
+`makepkg` verifies the signature before running any of the recipe's build
+steps, and the build then compiles only what is inside the verified archive:
+`-mod=vendor` with `GOPROXY=off` means no dependency is fetched while building.
+Installation never edits the pacman keyring or `LocalFileSigLevel`. Once
+`validpgpkeys` names a fingerprint, stock `makepkg` accepts a signature from
+that fingerprint independently of local GPG ownertrust — verified against
 `/usr/share/makepkg/integrity/verify_signature.sh` on pacman 7.1.0, where the
 ownertrust branch applies only when `validpgpkeys` is empty. Importing the key
 would therefore not be the trust decision, and `gpg --lsign-key` would not be
@@ -51,9 +61,15 @@ required; comparing the fingerprint against an independently obtained copy
 would be. Even then it would establish only that the archive is the one that
 fingerprint signed, not that the maintainer is trustworthy.
 
-Prolewatch's own installation runs before any Prolewatch control exists. In a
-signed release the signature authenticates the source for that first build.
-The current checkout has no maintainer signature.
+GitHub Actions also publishes Linux amd64 binaries, SBOMs, a binary archive,
+checksums, and attestations. Those checksums and attestations cover the
+workflow-built artifacts, not the source archive and signature uploaded later
+by the maintainer. The AUR source is authenticated through the recipe checksum
+and detached GPG signature.
+
+Prolewatch's own installation runs before any Prolewatch control exists. The
+release signature authenticates the source for that first build; it does not
+contain the build or establish that the source is safe.
 
 ## Reporting a vulnerability
 
@@ -106,9 +122,9 @@ The current residual areas, without operational attack instructions:
   checks the installed bytes, supported version range, and yay's effective
   `makepkg`/GPG wrapper paths. A disposable end-to-end `yay -B` transaction is
   still required as release evidence for the full interception path.
-- **Prolewatch bootstraps unprotected.** Its own package is built and installed
-  before any Prolewatch control exists, and in this release no maintainer
-  signature covers that first build either.
+- **Prolewatch bootstraps without containment.** Its own package is built and
+  installed before any Prolewatch control exists. The release signature
+  authenticates its source, but the first build itself runs outside Prolewatch.
 - **Detection is fallible in both directions**, which is why it no longer
   decides. Recognised patterns describe; only structurally decidable properties
   block.
@@ -118,11 +134,9 @@ The current residual areas, without operational attack instructions:
 - **Workspace byte and file limits are monitored, not hard quotas.** During
   `makepkg`'s execute-only `pkg/` interval, recursive accounting cannot observe
   growth below that directory; the filesystem reserve remains the backstop.
-- **Signed distribution is not part of this release.** The signed source
-  archive, the published maintainer fingerprint, and the AUR recipe that pins it
-  are implemented and tested but unpublished; a protected signing process
-  remains release work. What ships is a package the user builds and signs
-  locally, which authenticates the artifact and not its source.
+- **Signed distribution is pending publication.** The signed source tooling and
+  fingerprint-pinned AUR recipe are implemented and tested. The private key
+  backup, signed archive acceptance run, and AUR push remain release work.
 - Real multi-package `yay` transactions, upgrade interruption, disk-full and
   rollback behaviour still need testing on a disposable Arch host.
 - Archive-parser fuzzing and independent review remain open.

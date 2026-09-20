@@ -2,9 +2,9 @@
 
 This guide lists files and checks for reviewing Prolewatch, along with the
 limits of each check. For background on its AI-assisted development, see
-[How this was built](../README.md#how-this-was-built).
+[Development and testing](../README.md#development-and-testing).
 
-## Start with the part that carries the weight
+## Security-critical code
 
 The codebase is about 20,000 lines of non-test Go. Start with the files that
 implement containment and the installation gate. Defects here can expose the
@@ -13,7 +13,7 @@ user's decision.
 
 | Read | Lines | Why |
 | --- | --- | --- |
-| `internal/contain/userns.go`, `sandbox.go`, `scope.go`, `subid.go` | ~1,160 | The whole containment boundary: the user namespace, the Bubblewrap argument vector, the transient systemd unit that carries the resource limits, and subordinate-ID delegation. If the sandbox is wrong, it is wrong here. |
+| `internal/contain/userns.go`, `sandbox.go`, `scope.go`, `subid.go` | ~1,160 | The containment boundary: the user namespace, Bubblewrap arguments, the transient systemd unit enforcing resource limits, and subordinate-ID delegation. |
 | `internal/audit/build.go` | ~2,080 | The `makepkg` wrapper. Decides which phase is running, what the sandbox gets, when the network broker is open, and what is rescanned after sources arrive. |
 | `internal/audit/gate.go` | ~290 | The privileged-integration gate: enumerating and stripping surfaces that would run with package-manager privileges. |
 
@@ -27,7 +27,7 @@ Check these questions while reading:
 - Is a check performed on the same bytes that are later used, or on a copy that
   could have changed in between?
 
-## What you can run
+## Verification commands
 
 Review the relevant code before running these commands.
 
@@ -89,7 +89,7 @@ make verify-arch-package PACKAGE=/absolute/path/to/prolewatch-dev-*.pkg.tar.zst
 Checks the built package against an allow-list of installed files, so you can
 confirm the package installs what the recipe claims and nothing else.
 
-## If you want to review it with a model
+## AI-assisted code review
 
 AI review can miss the same defects as AI-assisted implementation. Verify
 specific findings and treat a clean result as weak evidence. Focus on concrete
@@ -124,7 +124,7 @@ Findings that name a file, a line, and a concrete sequence are the useful
 output. If you get one, [SECURITY.md](../SECURITY.md) says how to report it
 privately.
 
-## What none of this establishes
+## Review limitations
 
 - **No independent security audit has been done.** Nothing above is one.
 - **The maintainer has not yet read the whole codebase line by line.** The

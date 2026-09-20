@@ -4,7 +4,7 @@ Runtime checks for assumptions in `docs/architecture.md`. Each
 script is self-contained, re-runnable, needs no privilege, and touches no host
 package database.
 
-## The rule these exist to enforce
+## Design assumptions under test
 
 Verify claims about tool behaviour with a probe. Earlier design assumptions
 that testing disproved include:
@@ -30,7 +30,7 @@ Measure tool behaviour before documenting it as fact. Derive expected coverage
 from the platform or an independent implementation, not a copy of the list
 under test.
 
-## Running them
+## Running the probes
 
 ```bash
 for p in scripts/probes/probe-*.sh; do bash "$p"; done
@@ -63,7 +63,7 @@ system and outbound HTTPS to GitHub for its checksum-bound source.
 Run both manually in their stated acceptance environments; do not gate
 source-tree CI on them.
 
-## Skipping is not passing
+## Handling skipped probes
 
 `probe-yay-interception.sh` and `probe-release-signature.sh` print `SKIP:` and
 exit 0 when their prerequisites are absent. Source-tree checks tolerate these
