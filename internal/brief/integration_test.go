@@ -370,18 +370,10 @@ exit $status`
 // the footgun note above: a partial map presents as an ownership defect.
 func usernsArgs(subuid, subgid, uid, gid int, argv ...string) []string {
 	args := []string{"--user",
-		"--map-users", mapRange(0, subuid, uid),
-		"--map-users", mapRange(uid, uid, 1),
-		"--map-users", mapRange(uid+1, subuid+uid+1, 65536-uid-1),
-		"--map-groups", mapRange(0, subgid, gid),
-		"--map-groups", mapRange(gid, gid, 1),
-		"--map-groups", mapRange(gid+1, subgid+gid+1, 65536-gid-1),
+		"--map-user", fmt.Sprint(uid), "--map-users", fmt.Sprintf("%d,0,65536", subuid),
+		"--map-group", fmt.Sprint(gid), "--map-groups", fmt.Sprintf("%d,0,65536", subgid),
 		"--setuid", "0", "--setgid", "0", "--"}
 	return append(args, argv...)
-}
-
-func mapRange(nsStart, hostStart, count int) string {
-	return fmt.Sprintf("%d:%d:%d", nsStart, hostStart, count)
 }
 
 func subordinateStarts(t *testing.T) (int, int) {

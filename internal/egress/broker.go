@@ -181,7 +181,7 @@ func StartBroker(directory string, cfg Config, prompt PromptFunc) (*BrokerProces
 		// sandbox, the broker does not join a pre-mapped --userns FD.
 		"--die-with-parent", "--new-session", "--unshare-all", "--share-net", "--unshare-user", "--disable-userns", "--assert-userns-disabled",
 		"--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
-		"--symlink", "usr/lib", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
+		"--symlink", "usr/lib64", "/lib64", "--dir", "/etc", "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
 		"--ro-bind-try", "/etc/hosts", "/etc/hosts", "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf",
 		"--ro-bind-try", "/etc/ssl", "/etc/ssl", "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",

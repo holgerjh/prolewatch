@@ -17,7 +17,7 @@ func joined(args []string) string { return strings.Join(args, " ") }
 
 func TestMapArgsMapsZeroCallerAndTheRestOfTheSpace(t *testing.T) {
 	got := joined(mapArgs("--map-users", 1000, SubIDRange{Start: 165536, Count: 65536}))
-	want := "--map-users 0:165536:1000 --map-users 1000:1000:1 --map-users 1001:166536:64535"
+	want := "--map-user 1000 --map-users 165536,0,65536"
 	if got != want {
 		t.Fatalf("mapping\n got: %s\nwant: %s", got, want)
 	}
@@ -25,28 +25,31 @@ func TestMapArgsMapsZeroCallerAndTheRestOfTheSpace(t *testing.T) {
 
 func TestMapArgsSupportsCallerAboveArchiveIDSpace(t *testing.T) {
 	got := joined(mapArgs("--map-users", 100000, SubIDRange{Start: 231072, Count: 65536}))
-	want := "--map-users 0:231072:65536 --map-users 100000:100000:1"
+	want := "--map-user 100000 --map-users 231072,0,65536"
 	if got != want {
 		t.Fatalf("mapping\n got: %s\nwant: %s", got, want)
 	}
 }
 
-// The ranges must not overlap in the namespace ID space, or newuidmap refuses
-// the whole map and the failure surfaces far from its cause.
-func TestMapArgsRangesDoNotOverlap(t *testing.T) {
-	for _, uid := range []uint32{0, 1, 999, 1000, 65534, 65535} {
-		args := mapArgs("--map-users", uid, SubIDRange{Start: 100000, Count: 65536})
-		var end uint32
-		for i := 1; i < len(args); i += 2 {
-			var nsStart, hostStart, count uint32
-			if _, err := fmtSscan(args[i], &nsStart, &hostStart, &count); err != nil {
-				t.Fatalf("uid %d: unparsable range %q", uid, args[i])
+// util-linux 2.38/2.39 retain only the last range option. Both ID spaces must
+// use a single range plus a single-ID mapping, including boundary caller IDs.
+func TestMapArgsCompatibleWithSingleRangeUnshare(t *testing.T) {
+	for _, flag := range []string{"--map-users", "--map-groups"} {
+		for _, id := range []uint32{0, 1, 999, 1000, 65534, 65535, 100000} {
+			args := mapArgs(flag, id, SubIDRange{Start: 231072, Count: 65536})
+			want := []string{strings.TrimSuffix(flag, "s"), fmt.Sprint(id), flag, "231072,0,65536"}
+			if joined(args) != joined(want) {
+				t.Fatalf("id %d: got %v, want %v", id, args, want)
 			}
-			if nsStart < end {
-				t.Fatalf("uid %d: range %q starts below the previous end %d", uid, args[i], end)
-			}
-			end = nsStart + count
 		}
+	}
+}
+
+func TestMapArgsPreservesCoverageAtTheExclusiveRangeEnd(t *testing.T) {
+	got := joined(mapArgs("--map-groups", 65536, SubIDRange{Start: 231072, Count: 65536}))
+	want := "--map-group 65536 --map-groups 231072,0,65537"
+	if got != want {
+		t.Fatalf("mapping at the range boundary: got %s, want %s", got, want)
 	}
 }
 
@@ -202,6 +205,13 @@ func TestBwrapArgsAlwaysIsolateTheNetwork(t *testing.T) {
 	args := joined(Spec{Workdir: "/w", Argv: []string{"true"}}.BwrapArgs(3))
 	if !strings.Contains(args, "--unshare-net") {
 		t.Fatalf("contained execution must have no network: %s", args)
+	}
+}
+
+func TestBwrapArgsPreserveTheLib64LoaderDirectory(t *testing.T) {
+	args := joined(Spec{Workdir: "/w", Argv: []string{"true"}}.BwrapArgs(3))
+	if !strings.Contains(args, "--symlink usr/lib64 /lib64") {
+		t.Fatalf("sandbox must preserve Ubuntu's distinct lib64 loader directory: %s", args)
 	}
 }
 
@@ -436,11 +446,6 @@ func TestSandboxWritesAreOwnedByTheInvokingUser(t *testing.T) {
 	if stat.Uid != uint32(os.Getuid()) {
 		t.Fatalf("artifact owned by uid %d, expected the invoking uid %d", stat.Uid, os.Getuid())
 	}
-}
-
-// fmtSscan parses a "ns:host:count" range argument.
-func fmtSscan(arg string, nsStart, hostStart, count *uint32) (int, error) {
-	return fmt.Sscanf(arg, "%d:%d:%d", nsStart, hostStart, count)
 }
 
 // A nil *os.File in an io.Writer field is not a nil interface. os/exec takes

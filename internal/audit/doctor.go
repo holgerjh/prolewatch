@@ -583,7 +583,7 @@ func bubblewrapSmoke(ctx context.Context) Check {
 	probe, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
 	defer cancel()
 	check := fmt.Sprintf("test ! -e %q && test ! -e /opt && test ! -e /run/systemd && test ! -e /run/dbus && ! (exec 3<>/dev/tcp/127.0.0.1/%d)", sentinelPath, port)
-	args := []string{"--die-with-parent", "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/tmp", "--clearenv", "/usr/bin/bash", "-c", check}
+	args := []string{"--die-with-parent", "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/tmp", "--clearenv", "/usr/bin/bash", "-c", check}
 	raw, err := doctorCommandContext(probe, "/usr/bin/bwrap", args...).CombinedOutput()
 	detail := "host /run, /tmp, and /opt hidden; host loopback unreachable"
 	if err != nil {

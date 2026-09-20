@@ -117,7 +117,9 @@ func (s Spec) BwrapArgs(usernsFD int) []string {
 		"--symlink", "usr/bin", "/bin",
 		"--symlink", "usr/bin", "/sbin",
 		"--symlink", "usr/lib", "/lib",
-		"--symlink", "usr/lib", "/lib64",
+		// Arch's /usr/lib64 redirects to lib; Ubuntu keeps its ELF loader
+		// in /usr/lib64. Redirecting straight to usr/lib breaks Ubuntu exec.
+		"--symlink", "usr/lib64", "/lib64",
 		"--proc", "/proc",
 		"--dev", "/dev",
 		// Host /tmp and /run are replaced, not bound: they carry session

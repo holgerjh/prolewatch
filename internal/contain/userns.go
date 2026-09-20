@@ -80,9 +80,9 @@ type Namespace struct {
 	closed bool
 }
 
-// mapArgs builds the three-range identity mapping for one ID space.
+// mapArgs maps the archive ID space and preserves the caller's own identity.
 //
-// The whole subordinate range is mapped, not just uid 0. Mapping only uid 0 and
+// The whole archive ID space is mapped, not just uid 0. Mapping only uid 0 and
 // the caller leaves every other id - notably 65534/nobody - unmapped, and a
 // chown to an unmapped id returns EINVAL, which escapes fakeroot.
 // probe-stream-filter.sh carries the same mapping and explains how a partial
@@ -92,37 +92,23 @@ type Namespace struct {
 // EINVAL that escapes fakeroot into an EPERM that fakeroot swallows, and
 // nothing more.
 func mapArgs(flag string, id uint32, sub SubIDRange) []string {
-	var args []string
-	add := func(nsStart, hostStart, count uint32) {
-		if count == 0 {
-			return
-		}
-		args = append(args, flag, fmt.Sprintf("%d:%d:%d", nsStart, hostStart, count))
+	// Before util-linux 2.40, repeated range options silently replace one
+	// another. Use one range and let unshare carve out the caller's single-ID
+	// mapping. If the caller lies within the range, this consumes one fewer
+	// subordinate ID while still covering every namespace ID in that range.
+	// The older outer,inner,count syntax also works with util-linux 2.38.
+	count := min(sub.Count, uint32(idSpace))
+	// unshare also carves a hole when the single ID equals the exclusive
+	// range end. Include that ID explicitly so ID 65535 stays mapped when
+	// the invoking UID or GID is 65536. The extra slot uses the caller's ID,
+	// not an additional subordinate ID.
+	if id == count {
+		count++
 	}
-	remaining := sub.Count
-
-	// Below the caller's own id: ns 0..id-1 -> the start of the delegation.
-	low := id
-	if low > remaining {
-		low = remaining
+	return []string{
+		strings.TrimSuffix(flag, "s"), fmt.Sprint(id),
+		flag, fmt.Sprintf("%d,0,%d", sub.Start, count),
 	}
-	add(0, sub.Start, low)
-	remaining -= low
-
-	// The caller's own id, mapped identically. Files the sandbox creates then
-	// belong to the invoking user on the host with no translation.
-	add(id, id, 1)
-
-	// Above it, continuing through the delegated range.
-	high := uint32(idSpace) - id - 1
-	if id+1 >= idSpace {
-		high = 0
-	}
-	if high > remaining {
-		high = remaining
-	}
-	add(id+1, sub.Start+low, high)
-	return args
 }
 
 // NewNamespace creates the mapped user namespace and applies the ucount clamp.

@@ -51,7 +51,7 @@ func archiveProbeBwrapArgs() []string {
 		"--die-with-parent", "--new-session", "--unshare-all", "--unshare-user",
 		"--disable-userns", "--assert-userns-disabled",
 		"--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
-		"--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+		"--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
 		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
 		"--ro-bind-fd", "3", "/input", "--clearenv",
 		"--setenv", "PATH", "/usr/bin", "--setenv", "LANG", "C.UTF-8",

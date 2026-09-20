@@ -10,7 +10,7 @@ import (
 func TestArchiveProbeProductionSandboxContract(t *testing.T) {
 	args := archiveProbeBwrapArgs()
 	joined := " " + strings.Join(args, " ") + " "
-	for _, required := range []string{" --unshare-all ", " --disable-userns --assert-userns-disabled ", " --ro-bind-fd 3 /input ", " --clearenv ", " /usr/bin/bsdtar -tf /input "} {
+	for _, required := range []string{" --unshare-all ", " --disable-userns --assert-userns-disabled ", " --ro-bind-fd 3 /input ", " --clearenv ", " --symlink usr/lib64 /lib64 ", " /usr/bin/bsdtar -tf /input "} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("archive probe sandbox is missing %q: %v", required, args)
 		}
