@@ -350,11 +350,18 @@ func TestContainedProcessCannotReachTheHostNetwork(t *testing.T) {
 	}()
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	interfaces, err := runContained(t, ns, "awk -F: 'NR>2 {gsub(/ /, \"\", $1); print $1}' /proc/net/dev | sort | tr '\\n' ' '")
+	deviceTable, err := runContained(t, ns, "cat /proc/net/dev")
 	if err != nil {
-		t.Fatalf("run: %v (%s)", err, interfaces)
+		t.Fatalf("read sandbox interfaces: %v (%s)", err, deviceTable)
 	}
-	if strings.TrimSpace(interfaces) != "lo" {
+	var interfaces []string
+	for _, line := range strings.Split(deviceTable, "\n") {
+		name, _, found := strings.Cut(line, ":")
+		if found {
+			interfaces = append(interfaces, strings.TrimSpace(name))
+		}
+	}
+	if strings.Join(interfaces, " ") != "lo" {
 		t.Fatalf("the sandbox sees host interfaces: %q", interfaces)
 	}
 
@@ -491,10 +498,16 @@ func TestHostIdentifyingEtcFilesAreNotReachable(t *testing.T) {
 			t.Fatalf("%s is readable from the build sandbox: %q", path, out)
 		}
 	}
-	// The build still needs its own toolchain configuration.
-	out, _ := runContained(t, ns, "test -r /etc/makepkg.conf && echo present || echo missing")
-	if !strings.Contains(out, "present") {
-		t.Fatalf("makepkg.conf is not readable inside the sandbox: %q", out)
+	// The build still needs its own toolchain configuration on an Arch host.
+	// Ubuntu CI has no makepkg.conf; --ro-bind-try deliberately leaves an absent
+	// host file absent, while TestEtcIsEnumeratedNotBoundWholesale pins the bind.
+	if _, statErr := os.Stat("/etc/makepkg.conf"); statErr == nil {
+		out, _ := runContained(t, ns, "test -r /etc/makepkg.conf && echo present || echo missing")
+		if !strings.Contains(out, "present") {
+			t.Fatalf("makepkg.conf is not readable inside the sandbox: %q", out)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("inspect host makepkg.conf: %v", statErr)
 	}
 }
 
