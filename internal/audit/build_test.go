@@ -5,6 +5,7 @@ import (
 
 	"github.com/holgerjh/prolewatch/internal/brief"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -156,11 +157,14 @@ func TestMakepkgFailsFastWithoutAUserManager(t *testing.T) {
 	previousConfigPath := SystemConfigPath
 	SystemConfigPath = writeCurrentConfig(t, DefaultConfig())
 	previousManager := userManagerAvailable
+	previousInfoCommand := makepkgInfoCommand
 	defer func() {
 		SystemConfigPath = previousConfigPath
 		userManagerAvailable = previousManager
+		makepkgInfoCommand = previousInfoCommand
 	}()
 	userManagerAvailable = func() bool { return false }
+	makepkgInfoCommand = func(string, ...string) *exec.Cmd { return exec.Command("/usr/bin/true") }
 
 	stderr := captureStderr(t, func() {
 		if status := RunMakepkg(context.Background(), []string{"--nobuild"}); status != ExitExecutionFailure {

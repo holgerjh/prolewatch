@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"github.com/holgerjh/prolewatch/internal/brief"
 	"github.com/holgerjh/prolewatch/internal/contain"
 	"github.com/holgerjh/prolewatch/internal/egress"
@@ -84,6 +85,19 @@ func TestMain(m *testing.M) {
 		}
 		return brief.ArchiveFormat(head[:n]) != "", nil
 	})
+	// Package tests run from internal/audit, not from an installed filesystem.
+	// Point provider fixtures at the checkout so clean hosts exercise the assets
+	// under test instead of requiring /usr/share/prolewatch to exist.
+	repositoryShare, err := filepath.Abs(filepath.Join("..", "..", "share"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolve repository share directory:", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("PROLEWATCH_SHARE", repositoryShare); err != nil {
+		fmt.Fprintln(os.Stderr, "set repository share directory:", err)
+		os.Exit(1)
+	}
+	providerShareRoot = func() string { return repositoryShare }
 	if info, err := os.Stat("/"); err == nil {
 		trustedSystemUID = info.Sys().(*syscall.Stat_t).Uid
 		installedFileOwnerUID = trustedSystemUID

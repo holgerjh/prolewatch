@@ -274,8 +274,9 @@ approval prompts, and a read-only Codex sandbox.
 | `anthropic` | `sonnet` | `high` | **Moving alias** |
 | `ollama` (pilot) | none | `none` | Exact local digest |
 
-The Anthropic default, `sonnet`, resolves to whichever model the provider
-currently points it at. Prolewatch records the string it was configured with, so
+The Anthropic default, `sonnet`, is a moving alias that resolves to whichever
+model the provider currently points it at. Prolewatch records the string it was
+configured with, so
 a report says `sonnet` without naming the model that actually answered, and two
 reports carrying the same policy fingerprint can have been produced by different
 models weeks apart. Pin a full model identifier in `providers.anthropic.model`
