@@ -149,6 +149,7 @@ type workspaceMonitor struct {
 	watches       map[int]string
 	errors        chan error
 	done          chan struct{}
+	finished      chan struct{}
 	once          sync.Once
 	makepkgLocked bool
 }
@@ -161,7 +162,7 @@ func startWorkspaceMonitor(root string, cfg BuildConfig) (*workspaceMonitor, err
 	// Recursive scans enforce byte/file/free-space limits authoritatively. inotify
 	// is the low-latency signal to repeat that accounting as the build mutates the
 	// tree; neither mechanism alone is sufficient for newly created directories.
-	monitor := &workspaceMonitor{root: root, cfg: cfg, fd: -1, watches: map[int]string{}, errors: make(chan error, 1), done: make(chan struct{})}
+	monitor := &workspaceMonitor{root: root, cfg: cfg, fd: -1, watches: map[int]string{}, errors: make(chan error, 1), done: make(chan struct{}), finished: make(chan struct{})}
 	if err := monitor.reconcile(); err != nil {
 		return nil, err
 	}
@@ -311,6 +312,7 @@ func transientWorkspaceAccountingError(root, current string, err error) bool {
 }
 
 func (m *workspaceMonitor) run() {
+	defer close(m.finished)
 	// Reconcile every 250 ms and poll nonblocking inotify every 25 ms. The short
 	// poll catches new directories quickly; the slower full walk prevents missed
 	// or coalesced events from becoming an accounting bypass.

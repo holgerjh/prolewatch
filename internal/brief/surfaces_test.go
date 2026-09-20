@@ -314,6 +314,7 @@ func TestAutomaticRootExecutionIsAlwaysADecision(t *testing.T) {
 		"etc/pam.d/foo",
 		"etc/profile.d/foo.sh",
 		"usr/share/polkit-1/rules.d/10-foo.rules",
+		"usr/share/polkit-1/actions/org.foo.policy",
 	} {
 		class, ok := ClassifySurface(member)
 		if !ok {
@@ -337,7 +338,6 @@ func TestListedSurfacesAreNotAutomatic(t *testing.T) {
 		"usr/lib/systemd/user-generators/foo":          ActivationSession,
 		"usr/share/dbus-1/system-services/foo.service": ActivationEnabled,
 		"usr/share/dbus-1/system.d/foo.conf":           ActivationPassive,
-		"usr/share/polkit-1/actions/org.foo.policy":    ActivationPassive,
 		"usr/lib/security/pam_foo.so":                  ActivationPassive,
 	} {
 		class, ok := ClassifySurface(member)

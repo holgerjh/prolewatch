@@ -240,6 +240,8 @@ var (
 	makepkgConfigSnapshotter  = snapshotMakepkgConfigs
 	constrainedCommandRunner  = runConstrainedCommand
 	makepkgBrokerTempDir      = newMakepkgBrokerDirectory
+	sourceFreezeRunner        = egress.FreezeDeclaredSources
+	sourceFreezeMonitorStart  = startWorkspaceMonitor
 	makepkgNetworkBrokerStart = func(directory string, cfg egress.Config, prompt egress.PromptFunc) (makepkgBroker, error) {
 		return egress.StartBroker(directory, cfg, prompt)
 	}
@@ -1386,7 +1388,7 @@ func acquireDeclaredSources(ctx context.Context, workdir string, cfg Config, inv
 	}
 	defer namespace.Close()
 
-	allowance, err := egress.FreezeDeclaredSources(ctx, namespace, workdir, freezeLimits(cfg.Build))
+	allowance, err := freezeDeclaredSourcesWithWorkspaceMonitor(ctx, namespace, workdir, cfg.Build)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,6 +1414,65 @@ func acquireDeclaredSources(ctx context.Context, workdir string, cfg Config, inv
 	}
 	invocation.SourceDest = srcdest
 	return acquisition, nil
+}
+
+// freezeDeclaredSourcesWithWorkspaceMonitor adds whole-checkout accounting to
+// the narrower cgroup, runtime, output, and single-file limits used while
+// makepkg evaluates a PKGBUILD. The monitor belongs here rather than in egress:
+// audit owns BuildConfig and egress must remain below it in the import graph.
+func freezeDeclaredSourcesWithWorkspaceMonitor(ctx context.Context, namespace *contain.Namespace, workdir string, build BuildConfig) (*egress.Allowance, error) {
+	monitor, err := sourceFreezeMonitorStart(workdir, build)
+	if err != nil {
+		return nil, fmt.Errorf("start source-freeze workspace accounting: %w", err)
+	}
+
+	freezeCtx, cancelFreeze := context.WithCancelCause(ctx)
+	forwardStop := make(chan struct{})
+	forwardDone := make(chan struct{})
+	var forwardedErr error
+	go func() {
+		defer close(forwardDone)
+		select {
+		case monitorErr := <-monitor.errors:
+			if monitorErr != nil {
+				forwardedErr = monitorErr
+				cancelFreeze(monitorErr)
+			}
+		case <-forwardStop:
+		case <-freezeCtx.Done():
+		}
+	}()
+
+	allowance, freezeErr := sourceFreezeRunner(freezeCtx, namespace, workdir, freezeLimits(build))
+	monitor.stop()
+	<-monitor.finished
+	close(forwardStop)
+	<-forwardDone
+
+	// The freeze may exit successfully at the same instant the monitor reports.
+	// If the forwarding select observed the stop first, the buffered error is
+	// still authoritative and must prevent trusted-side downloading.
+	monitorErr := forwardedErr
+	if monitorErr == nil {
+		select {
+		case monitorErr = <-monitor.errors:
+		default:
+		}
+	}
+	// Capture an execution, parent cancellation, or forwarded monitor failure
+	// before the cleanup cancel can turn a successful context into Canceled.
+	freezeCause := context.Cause(freezeCtx)
+	cancelFreeze(nil)
+	if monitorErr != nil {
+		return nil, fmt.Errorf("source-freeze workspace accounting: %w", monitorErr)
+	}
+	if freezeErr != nil {
+		return nil, freezeErr
+	}
+	if freezeCause != nil {
+		return nil, freezeCause
+	}
+	return allowance, nil
 }
 
 // transactionSourcePlanPath names where this transaction's frozen declaration

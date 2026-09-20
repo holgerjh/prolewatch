@@ -174,9 +174,9 @@ Before installation Prolewatch enumerates every known root-relevant surface in
 the finished `.pkg.tar.zst`, and shows all of them. It *stops* only for the ones
 that run as root, or grant privilege, with no further step by anyone: install
 scriptlets, `libalpm` hooks, udev rules, `sysusers.d`, `tmpfiles.d`, generators,
-`sudoers` drop-ins. A systemd unit nobody has enabled, a user-session unit, a
-polkit action declaration, a PAM module nothing references: those are printed
-and passed.
+`sudoers` drop-ins, and Polkit actions whose `<defaults>` or `imply` annotations
+can grant rights. A systemd unit nobody has enabled, a user-session unit, or a
+PAM module nothing references is printed and passed.
 
 Limiting prompts to automatic integration reduces repeated questions about
 services that still require explicit activation.

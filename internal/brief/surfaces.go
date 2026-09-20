@@ -250,11 +250,14 @@ func privilegedSurfaces() []Surface {
 	add(configRoots, "binfmt.d/", SurfaceKernel, ActivationAutomatic, "registers an interpreter the kernel invokes for matching binaries")
 
 	// A polkit rule is JavaScript polkitd evaluates when deciding an
-	// authorisation, loaded as soon as it is on disk; an action file only
-	// declares what may be asked for and its defaults. Grouping them cost the
-	// second one nothing and the first one everything, so they are separated.
+	// authorisation, loaded as soon as it is on disk. An action file can also
+	// grant rights immediately through its <defaults> or extend other actions
+	// through org.freedesktop.policykit.imply. Neither path needs a later
+	// enablement step, so both require a decision without claiming that every
+	// action file executes root code.
 	add(polkitRoots, "polkit-1/rules.d/", SurfacePolkit, ActivationAutomatic, "decides privileged authorisation requests, immediately")
-	add(polkitRoots, "polkit-1/actions/", SurfacePolkit, ActivationPassive, "declares privileged actions and their defaults; runs nothing itself")
+	add(polkitRoots, "polkit-1/actions/", SurfacePolkit, ActivationAutomatic,
+		"can grant rights immediately through <defaults> or org.freedesktop.policykit.imply; inspect both")
 
 	add(dbusServiceRoots, "dbus-1/system-services/", SurfaceDBus, ActivationEnabled, "can be activated as a system service on request")
 

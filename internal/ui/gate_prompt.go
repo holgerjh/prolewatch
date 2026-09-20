@@ -192,7 +192,7 @@ func surfaceInspectCommand(archivePath string, surface brief.PrivilegedSurface) 
 	if !omitted || !archiveOK || !memberOK {
 		return ""
 	}
-	return "/usr/bin/bsdtar -xOf -- " + archive + " " + member
+	return "/usr/bin/bsdtar -xO --file " + archive + " -- " + member + " 2>&1 | /usr/bin/cat -v"
 }
 
 func shellQuotedInline(value string) (string, bool) {

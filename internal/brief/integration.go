@@ -118,9 +118,9 @@ func EnumerateSurfaces(packagePath string) ([]PrivilegedSurface, error) {
 // privilege, with no further step by anyone.
 //
 // This is the set worth stopping an install for. The rest - a unit nobody has
-// enabled, a user-session unit, a polkit action declaration, a module file
-// nothing references - is inventory: real, worth showing, and not a question,
-// because a question asked on every service package is answered by reflex.
+// enabled, a user-session unit, a module file nothing references - is
+// inventory: real, worth showing, and not a question, because a question asked
+// on every service package is answered by reflex.
 func SurfacesRequiringDecision(surfaces []PrivilegedSurface) []PrivilegedSurface {
 	var decide []PrivilegedSurface
 	for _, surface := range surfaces {

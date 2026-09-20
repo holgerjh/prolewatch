@@ -315,11 +315,21 @@ a separately derived source list.
 It is arbitrary shell, so it runs in a transient `systemd --user` unit with its
 own memory, CPU, task, runtime and output limits — every one of them a
 floor-capped narrowing of the configured build limits, and the timeout capped at
-a minute. Bubblewrap supplies namespaces and nothing else: under plain
-containment a top-level fork bomb or `while :; do :; done` exhausted the host
-and hung until the user intervened, before the constrained build ever started.
+a minute. The same workspace monitor used by normal builds enforces the
+configured whole-checkout byte, file-count, and filesystem-reserve limits while
+the source set is frozen; a monitor failure cancels the transient unit before
+trusted-side downloading begins. Bubblewrap supplies namespaces and nothing
+else: under plain containment a top-level fork bomb or `while :; do :; done`
+exhausted the host and hung until the user intervened, before the constrained
+build ever started.
 `contain.RunLimited` is the primitive; `contain.Run` remains for commands that
 are not package-authored.
+
+The markerless `--printsrcinfo` bootstrap already applies the narrowed limits
+through the regular constrained runner, including its workspace monitor. That
+runner and the source-freeze wrapper currently orchestrate the same monitor in
+two places; a later consolidation may remove that duplication without changing
+their distinct protocol output and containment paths.
 
 **Decoder budgets are separate from output budgets.** The scanner's entry, byte
 and depth limits count what comes *out* of a decompressor; they say nothing
@@ -1086,11 +1096,11 @@ Each entry records an activation: `automatic` runs package-authored code as
 root, or grants privilege, with no further step by anyone — the scriptlet, a
 `libalpm` hook, a system generator, `sysusers.d`, `tmpfiles.d`, a udev rule, a
 `sudoers` drop-in, a cron entry, kernel configuration, `pam.d`, `profile.d`, a
-polkit *rule*. `enabled`, `session` and `passive` do not: an ordinary systemd
-unit runs when something starts it, a user unit runs in the user's own session,
-and a polkit *action* declaration, a D-Bus policy file, or a PAM module nothing
-references executes nothing at all. Only `automatic` is a question; the rest is
-printed and passed.
+polkit *rule*, or a polkit *action* whose `<defaults>` or `imply` annotation can
+grant rights. `enabled`, `session` and `passive` do not: an ordinary systemd unit
+runs when something starts it, a user unit runs in the user's own session, and
+a D-Bus policy file or a PAM module nothing references executes nothing at all.
+Only `automatic` is a question; the rest is printed and passed.
 
 This classification reduces repeated prompts for ordinary service units.
 `RequiresDecision` is

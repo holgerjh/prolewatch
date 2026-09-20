@@ -447,6 +447,42 @@ func TestALinkOccupyingASurfaceNameIsAsked(t *testing.T) {
 	}
 }
 
+// A Polkit action does not execute code itself, but its defaults can grant a
+// caller authorization and imply can extend that grant to another action. The
+// gate must therefore ask about the regular policy file rather than list it as
+// passive inventory.
+func TestPolkitActionWithImplicitAuthorizationRequiresDecision(t *testing.T) {
+	const policy = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="org.example.manage">
+    <defaults><allow_any>yes</allow_any><allow_active>yes</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.imply">org.example.admin</annotate>
+  </action>
+</policyconfig>
+`
+	archive := zstdPackage(t, map[string]string{
+		"usr/share/polkit-1/actions/org.example.manage.policy": policy,
+	}, nil)
+	surfaces, err := EnumerateSurfaces(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surfaces) != 1 {
+		t.Fatalf("enumerated %d surfaces, want one: %#v", len(surfaces), surfaces)
+	}
+	surface := surfaces[0]
+	if surface.Kind != SurfacePolkit || !surface.Activation.RequiresDecision() {
+		t.Fatalf("Polkit action did not require a decision: %#v", surface)
+	}
+	for _, want := range []string{"<allow_active>yes</allow_active>", "org.freedesktop.policykit.imply"} {
+		if !strings.Contains(surface.Body, want) {
+			t.Errorf("policy body omitted %q: %q", want, surface.Body)
+		}
+	}
+}
+
 // zstdPackage writes a minimal .pkg.tar.zst with the given regular files and
 // symlinks. Built in-process because the property under test is how the
 // enumerator reads a tar header, not whether makepkg can produce one.

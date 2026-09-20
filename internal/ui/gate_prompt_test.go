@@ -1,6 +1,12 @@
 package ui
 
 import (
+	"archive/tar"
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,8 +88,85 @@ func TestGatePromptGivesTruncatedBodyInspectCommand(t *testing.T) {
 	archive := "/tmp/foo'bar.pkg.tar.zst"
 	long := strings.Repeat("echo padding\n", maxSurfaceLines+1)
 	rendered := RenderGatePrompt(archive, []brief.PrivilegedSurface{surface(".INSTALL", brief.SurfaceScriptlet, long)})
-	if !strings.Contains(rendered, `'/tmp/foo'"'"'bar.pkg.tar.zst' '.INSTALL'`) || !strings.Contains(rendered, "Inspect the full body in another terminal") {
+	if !strings.Contains(rendered, `/usr/bin/bsdtar -xO --file '/tmp/foo'"'"'bar.pkg.tar.zst' -- '.INSTALL' 2>&1 | /usr/bin/cat -v`) ||
+		!strings.Contains(rendered, "Inspect the full body in another terminal") || !strings.Contains(rendered, "more lines not shown") {
 		t.Fatalf("truncated root code has no safe inspection command:\n%s", rendered)
+	}
+}
+
+func TestSurfaceInspectCommandShowsOmittedPolicyThroughTerminalFilter(t *testing.T) {
+	member := "usr/share/polkit-1/actions/org.example.manage.policy"
+	var body bytes.Buffer
+	for index := 0; index < maxSurfaceLines+5; index++ {
+		fmt.Fprintf(&body, "  <message xml:lang=\"l%d\">translation</message>\n", index)
+	}
+	body.WriteString("  <allow_active>yes</allow_active>\n")
+	body.WriteString("  <annotate key=\"org.freedesktop.policykit.imply\">org.example.admin</annotate>\n")
+	body.Write([]byte("controls:\x1b]2;forged\a\r\x7f\xff\n"))
+
+	archivePath := filepath.Join(t.TempDir(), "policy'fixture.pkg.tar")
+	handle, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := tar.NewWriter(handle)
+	if err := writer.WriteHeader(&tar.Header{Name: member, Mode: 0o644, Size: int64(body.Len())}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	surface := brief.PrivilegedSurface{Member: member, Activation: brief.ActivationAutomatic, Body: body.String(), Size: int64(body.Len())}
+	command := surfaceInspectCommand(archivePath, surface)
+	if !strings.Contains(command, `2>&1 | /usr/bin/cat -v`) || !strings.Contains(command, `policy'"'"'fixture.pkg.tar'`) ||
+		!strings.Contains(command, `'usr/share/polkit-1/actions/org.example.manage.policy'`) {
+		t.Fatalf("inspection command lost stderr filtering or shell quoting: %q", command)
+	}
+
+	process := exec.Command("/usr/bin/bash", "-c", command)
+	process.Env = append(os.Environ(), "LC_ALL=C")
+	output, err := process.CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspection command failed: %v: %s", err, output)
+	}
+	text := string(output)
+	for _, want := range []string{"<allow_active>yes</allow_active>", "org.freedesktop.policykit.imply", "^[", "^M", "^?", "M-^?"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("filtered full body omitted %q: %q", want, text)
+		}
+	}
+	for _, value := range output {
+		if value != '\n' && value != '\t' && (value < 0x20 || value > 0x7e) {
+			t.Fatalf("filtered detail output retained unsafe byte 0x%02x: %q", value, output)
+		}
+	}
+
+	// bsdtar diagnostics name attacker-controlled archive members. A missing
+	// high-byte name proves stderr traverses the same fixed filter rather than
+	// reaching the terminal directly.
+	missing := surface
+	missing.Member = "missing-é.policy"
+	errorCommand := surfaceInspectCommand(archivePath, missing)
+	process = exec.Command("/usr/bin/bash", "-c", errorCommand)
+	process.Env = append(os.Environ(), "LC_ALL=C")
+	output, err = process.CombinedOutput()
+	if err != nil {
+		t.Fatalf("filtered diagnostic command failed: %v: %s", err, output)
+	}
+	if len(output) == 0 || !bytes.Contains(output, []byte("M-")) {
+		t.Fatalf("bsdtar diagnostic did not pass through cat -v: %q", output)
+	}
+	for _, value := range output {
+		if value != '\n' && value != '\t' && (value < 0x20 || value > 0x7e) {
+			t.Fatalf("filtered diagnostic retained unsafe byte 0x%02x: %q", value, output)
+		}
 	}
 }
 
