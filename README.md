@@ -33,12 +33,11 @@ service account, `sudoers` entry, or setuid binary. The optional local Ollama
 pilot can use a daemon you separately install and operate as part of your local
 trusted computing base.
 
-**Experimental AUR release candidate — publication pending**
+**Experimental AUR release — 0.12.2**
 
-The current tree targets `0.12.2` as the first public experimental release for
-x86-64 Arch Linux. Publication remains pending until its signed source archive
-has passed the disposable-system acceptance run and the recipe has been pushed
-to the AUR.
+`0.12.2` is published for x86-64 Arch Linux as
+[`prolewatch`](https://aur.archlinux.org/packages/prolewatch). Its signed source
+archive passed the disposable-system acceptance run and real yay interception.
 
 > [!WARNING]
 > Prolewatch is experimental and has not been independently audited. It does not
@@ -188,11 +187,10 @@ terminal, so an unattended install stops there.
 ## Installation
 
 > [!IMPORTANT]
-> **AUR publication is pending.** The intended `0.12.2` release uses a
-> maintainer-signed, vendored source archive and an AUR recipe pinned to the
-> maintainer fingerprint. Until the package page is live and this notice is
-> updated, use the development installation below from a checkout you have
-> reviewed. See [SECURITY.md](SECURITY.md) for the trust boundary.
+> The experimental
+> [`prolewatch`](https://aur.archlinux.org/packages/prolewatch) package uses a
+> maintainer-signed, vendored source archive. Its AUR recipe pins the maintainer
+> fingerprint. See [SECURITY.md](SECURITY.md) for the trust boundary.
 
 The supported target for the first release is x86-64 Arch Linux. The Linux
 amd64 binaries and binary archive attached by GitHub Actions are verification
@@ -206,10 +204,9 @@ Prolewatch installs four unprivileged binaries and its policy file.
 
 ### 1. Install the package
 
-#### Signed AUR release, after publication
+#### Signed AUR release
 
-The release will publish these separate assets at the `v0.12.2` GitHub
-prerelease:
+The `v0.12.2` GitHub prerelease publishes these separate assets:
 
 - `prolewatch-0.12.2.tar.gz`
 - `prolewatch-0.12.2.tar.gz.sig`
@@ -224,7 +221,7 @@ The full release-key fingerprint is:
 296E983E7120909958BD38E557F1F87148E02B27
 ```
 
-After publication, download the public key from the release, inspect its full
+Download the public key from the release, inspect its full
 fingerprint, compare it with both documents through a separate path, and import
 it as the normal build user:
 

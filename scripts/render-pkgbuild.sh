@@ -1,11 +1,9 @@
 #!/bin/bash
 # Render packaging/arch/PKGBUILD.in for one distribution channel.
 #
-# One template, two channels. The recipe that a fresh user builds from the AUR
-# and the recipe a maintainer builds from a working tree differ only in where
-# the source comes from and how its authenticity is established; everything that
-# decides what lands on the system is shared, so the two cannot drift into
-# installing different things.
+# AUR recipes use a signed release archive.
+# Development recipes use a local archive.
+# Both use the same packaging functions.
 #
 # Usage:
 #   render-pkgbuild.sh aur VERSION SHA256 FINGERPRINT
@@ -20,9 +18,7 @@ version=${2:?usage: render-pkgbuild.sh CHANNEL VERSION SHA256 [FINGERPRINT]}
 sha256=${3:?usage: render-pkgbuild.sh CHANNEL VERSION SHA256 [FINGERPRINT]}
 fingerprint=${4:-}
 
-# The release URL is part of the trust path and is therefore fixed here rather
-# than passed in: a caller that could choose it could point a published recipe
-# at a host the maintainer never released from.
+# Release assets are hosted in the upstream GitHub repository.
 release_url=https://github.com/holgerjh/prolewatch/releases/download
 
 [[ ${version} =~ ^[A-Za-z0-9@._+]+$ ]] || { echo 'invalid package version' >&2; exit 1; }
@@ -36,19 +32,15 @@ case ${channel} in
     }
     pkgname=prolewatch
     archive="prolewatch-\${pkgver}.tar.gz"
-    # \n rather than a real newline: sed replacements are single-line.
+    # sed expands \n into a newline in the generated recipe.
     source="\"${archive}::${release_url}/v\${pkgver}/${archive}\"\\n        \"${archive}.sig::${release_url}/v\${pkgver}/${archive}.sig\""
-    # SKIP for the signature: a checksum of a signature proves nothing that the
-    # signature itself does not, and makepkg refuses to build when the detached
-    # signature does not verify against validpgpkeys.
+    # makepkg checks the detached signature against validpgpkeys.
     sums="'${sha256}'\\n             'SKIP'"
     keys="'${fingerprint}'"
     ;;
   dev)
     pkgname=prolewatch-dev
-    # Double quotes: ${pkgver} has to expand, which it does not inside single
-    # quotes - and a recipe naming a file that does not exist fails late and
-    # confusingly.
+    # Keep ${pkgver} expandable in the generated recipe.
     source="\"prolewatch-\${pkgver}.tar.gz\""
     sums="'${sha256}'"
     keys=""
@@ -59,7 +51,7 @@ case ${channel} in
     ;;
 esac
 
-# '|' as the delimiter: the substituted values contain '/'.
+# The '|' delimiter allows '/' in source URLs.
 sed -e "s|@PKGNAME@|${pkgname}|g" \
     -e "s|@PKGVER@|${version}|g" \
     -e "s|@SOURCE@|${source}|" \

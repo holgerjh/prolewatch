@@ -9,24 +9,23 @@ especially important.
 
 ## Supported versions
 
-The current tree targets `0.12.2` as the first public experimental release for
-x86-64 Arch Linux. AUR publication is pending its signed-source acceptance run.
+`0.12.2` is the first public experimental release for x86-64 Arch Linux. It is
+available as [`prolewatch`](https://aur.archlinux.org/packages/prolewatch).
 Security fixes are made against the current default branch; older checkouts may
 no longer match the documented security boundary, though reports remain useful
 when the behavior also reproduces on current code.
 
 ## Release distribution and verification
 
-**AUR publication is pending.** Until the package page is live, install from a
-reviewed checkout using the development path in
-[Installation](README.md#installation). Its local package signature
-authenticates the artifact to `pacman`; it says nothing about the source's
-origin or safety.
+The supported AUR package is
+[`prolewatch`](https://aur.archlinux.org/packages/prolewatch). The development
+path in [Installation](README.md#installation) remains available for reviewed
+checkouts.
 
 ### Signed AUR source path
 
-The `0.12.2` release will publish `prolewatch-0.12.2.tar.gz`, its detached
-`.sig`, and `prolewatch-release-key.asc` on the `v0.12.2` GitHub prerelease.
+The `0.12.2` release publishes `prolewatch-0.12.2.tar.gz`, its detached `.sig`,
+and `prolewatch-release-key.asc` on the `v0.12.2` GitHub prerelease.
 The source archive is deterministic and includes vendored Go dependencies. The
 AUR recipe fetches those exact assets, checks the archive SHA-256, and pins the
 signing key through `validpgpkeys`.
@@ -37,7 +36,7 @@ The full 40-character maintainer fingerprint is:
 296E983E7120909958BD38E557F1F87148E02B27
 ```
 
-Once published, download the public key from the release, display its
+Download the public key from the release, display its
 fingerprint, compare it with this document through a separate path, and import
 it into the normal build user's keyring:
 
@@ -98,9 +97,9 @@ currently guaranteed.
 
 ## Open findings
 
-- Assessment date: 2026-09-10
-- Release-candidate commit: pending selection after the concurrent release work
-- Applies to: the tree targeting `0.12.2` as the first public experimental release
+- Assessment date: 2026-09-25
+- Release commit: `88108e27ac8e00346865996d2dbb35019f388332`
+- Applies to: `0.12.2`, the first public experimental release
 
 Prolewatch installs no privileged component: no daemon, socket, service
 account, `sudoers` entry, or setuid binary.
@@ -118,10 +117,6 @@ The current residual areas, without operational attack instructions:
   invoking user once can delete it, after which every `yay -S` runs unprotected
   with no signal. This is inherent to hooking a third-party tool's extension
   point, and it is stated rather than mitigated.
-- **Hook health is not verified through a real `yay` transaction.** `setup`
-  checks the installed bytes, supported version range, and yay's effective
-  `makepkg`/GPG wrapper paths. A disposable end-to-end `yay -B` transaction is
-  still required as release evidence for the full interception path.
 - **Prolewatch bootstraps without containment.** Its own package is built and
   installed before any Prolewatch control exists. The release signature
   authenticates its source, but the first build itself runs outside Prolewatch.
@@ -134,9 +129,6 @@ The current residual areas, without operational attack instructions:
 - **Workspace byte and file limits are monitored, not hard quotas.** During
   `makepkg`'s execute-only `pkg/` interval, recursive accounting cannot observe
   growth below that directory; the filesystem reserve remains the backstop.
-- **Signed distribution is pending publication.** The signed source tooling and
-  fingerprint-pinned AUR recipe are implemented and tested. The private key
-  backup, signed archive acceptance run, and AUR push remain release work.
 - Real multi-package `yay` transactions, upgrade interruption, disk-full and
   rollback behaviour still need testing on a disposable Arch host.
 - Archive-parser fuzzing and independent review remain open.

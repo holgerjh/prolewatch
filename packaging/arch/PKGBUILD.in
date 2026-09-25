@@ -3,7 +3,7 @@
 pkgname=@PKGNAME@
 pkgver=@PKGVER@
 pkgrel=1
-pkgdesc='Security gate for safer yay-driven AUR builds'
+pkgdesc='AUR security scanner and build sandbox with network isolation, optional AI review and root action inspection'
 arch=('x86_64')
 url='https://github.com/holgerjh/prolewatch'
 license=('AGPL-3.0-only')
@@ -15,31 +15,15 @@ if [[ ${pkgname} == prolewatch-dev ]]; then
   conflicts=('prolewatch')
 fi
 options=('!debug' '!lto' '!strip')
-# Preserve administrator policy edits across package upgrades.
 backup=('etc/prolewatch/config.yaml')
-# The source stanza is the only part that differs between channels, and it is
-# where the trust path lives. scripts/render-pkgbuild.sh fills it:
-#
-#   aur - the released source archive and its detached signature, fetched from
-#         the release URL, with the maintainer fingerprint in validpgpkeys.
-#         makepkg verifies that signature before a single line of this recipe's
-#         build runs, and requires it to come from exactly that fingerprint.
-#         Note what that is and is not: with validpgpkeys populated, stock
-#         makepkg does not consult local GPG ownertrust at all, so the pin is
-#         the control and comparing the fingerprint against an independent
-#         source is the user's decision.
-#   dev - a source archive built from the working tree, sitting beside this
-#         file. Nothing to verify a signature against, because nothing was
-#         published; the maintainer flow signs the finished package instead.
-#
-# Everything below the stanza is identical for both, on purpose: a second recipe
-# with its own package() is how the two would come to install different things.
+
 source=(@SOURCE@)
 sha256sums=(@SHA256SUMS@)
 validpgpkeys=(@VALIDPGPKEYS@)
 
 prepare() {
   cd "${srcdir}/prolewatch-${pkgver}"
+  # Use vendored dependencies and keep Go state inside the build directory.
   export HOME="${srcdir}/home"
   export GOCACHE="${srcdir}/gocache"
   export GOMODCACHE="${srcdir}/gomodcache"
@@ -78,10 +62,6 @@ package() {
   local build_root="${srcdir}/prolewatch-build"
   local name
 
-  # Four unprivileged binaries and nothing else. No libexec services, no
-  # systemd units or sockets, no sysusers or tmpfiles, no pacman hooks, and no
-  # implementation manifest: this package installs no privileged component, and
-  # that is release invariant 1 rather than a packaging simplification.
   for name in prolewatch prolewatch-makepkg prolewatch-gpg prolewatch-net; do
     install -Dm0755 "${build_root}/${name}" "${pkgdir}/usr/bin/${name}"
   done
@@ -90,8 +70,6 @@ package() {
     install -Dm0644 "${source_root}/share/${name}" "${pkgdir}/usr/share/prolewatch/${name}"
   done
 
-  # Protected scans require the system policy file; pacman's backup declaration
-  # above preserves local edits across upgrades.
   install -Dm0644 "${source_root}/share/default-config.yaml" "${pkgdir}/etc/prolewatch/config.yaml"
 
   install -Dm0644 "${source_root}/README.md" "${pkgdir}/usr/share/doc/prolewatch/README.md"
