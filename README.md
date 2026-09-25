@@ -35,7 +35,7 @@ trusted computing base.
 
 **Experimental AUR release candidate — publication pending**
 
-The current tree targets `0.12.0` as the first public experimental release for
+The current tree targets `0.12.1` as the first public experimental release for
 x86-64 Arch Linux. Publication remains pending until its signed source archive
 has passed the disposable-system acceptance run and the recipe has been pushed
 to the AUR.
@@ -188,7 +188,7 @@ terminal, so an unattended install stops there.
 ## Installation
 
 > [!IMPORTANT]
-> **AUR publication is pending.** The intended `0.12.0` release uses a
+> **AUR publication is pending.** The intended `0.12.1` release uses a
 > maintainer-signed, vendored source archive and an AUR recipe pinned to the
 > maintainer fingerprint. Until the package page is live and this notice is
 > updated, use the development installation below from a checkout you have
@@ -208,11 +208,11 @@ Prolewatch installs four unprivileged binaries and its policy file.
 
 #### Signed AUR release, after publication
 
-The release will publish these separate assets at the `v0.12.0` GitHub
+The release will publish these separate assets at the `v0.12.1` GitHub
 prerelease:
 
-- `prolewatch-0.12.0.tar.gz`
-- `prolewatch-0.12.0.tar.gz.sig`
+- `prolewatch-0.12.1.tar.gz`
+- `prolewatch-0.12.1.tar.gz.sig`
 - `prolewatch-release-key.asc`
 
 The automatic GitHub "Source code" downloads and the workflow-built binary
@@ -230,7 +230,7 @@ it as the normal build user:
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/holgerjh/prolewatch/releases/download/v0.12.0/prolewatch-release-key.asc
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.1/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
 yay -S prolewatch

@@ -57,7 +57,7 @@ jobs:
         env:
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
-          PROLEWATCH_BUILD_DIR: build/linux-${{ matrix.arch }}
+          PROLEWATCH_BUILD_DIR: ${{ github.workspace }}/build/linux-${{ matrix.arch }}
         run: ./scripts/build.sh
       - name: Generate CycloneDX SBOMs
         run: ./scripts/generate-sbom.sh '${{ matrix.arch }}' 'build/linux-${{ matrix.arch }}' dist
