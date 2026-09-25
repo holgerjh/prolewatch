@@ -19,8 +19,8 @@ when the behavior also reproduces on current code.
 
 The supported AUR package is
 [`prolewatch`](https://aur.archlinux.org/packages/prolewatch). The development
-path in [Installation](README.md#installation) remains available for reviewed
-checkouts.
+path in [Contributing](CONTRIBUTING.md#development-workflow) remains available
+for reviewed checkouts.
 
 ### Signed AUR source path
 

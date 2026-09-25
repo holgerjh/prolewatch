@@ -78,11 +78,9 @@ gpg --homedir "$dev_key_dir" --armor --export "$fingerprint" \
 Nothing here touches the system pacman keyring or `/etc/pacman.conf`.
 `verify-arch-package` checks the detached signature against this key home
 directly, so it does not depend on pacman's `LocalFileSigLevel`. These steps
-match the installation instructions in the
-[README](README.md#installation), and `make dev-install` runs all of them,
-reusing an existing signing key — which is what makes it usable on a disposable
-test system you reset often. Build and install subsequent
-development revisions with:
+are automated by `make dev-install`, which reuses an existing signing key. This
+makes it useful on a disposable test system you reset often. Build and install
+subsequent development revisions with:
 
 ```bash
 make arch-package

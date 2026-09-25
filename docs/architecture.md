@@ -1052,9 +1052,10 @@ a current limitation:
   `LocalFileSigLevel` edit;
 - no modification to the final `sudo pacman -U` step.
 
-The intended AUR workflow is `yay -S prolewatch` followed by `prolewatch setup`.
-Publication is pending. See [Installation](../README.md#installation) for the
-current signed-source release plan and development installation instructions.
+The AUR workflow is `yay -S prolewatch` followed by `prolewatch setup`. See
+[Installation](../README.md#installation) for the current signed-source path
+and [Contributing](../CONTRIBUTING.md#development-workflow) for development
+installation instructions.
 
 `setup` rather than `install-hook` because writing the hook is not the same as
 being ready. The package installs its configuration as a pacman backup file,

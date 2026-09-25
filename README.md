@@ -192,135 +192,37 @@ terminal, so an unattended install stops there.
 > maintainer-signed, vendored source archive. Its AUR recipe pins the maintainer
 > fingerprint. See [SECURITY.md](SECURITY.md) for the trust boundary.
 
-The supported target for the first release is x86-64 Arch Linux. The Linux
-amd64 binaries and binary archive attached by GitHub Actions are verification
-artifacts, not installable distributions: they do not include the `Makefile`,
-packaging scripts, or an installer, and copying the binaries alone would omit
-required policy and shared files. Their checksums and GitHub attestations cover
-those workflow-built artifacts. The separately uploaded AUR source archive is
-verified by the checksum and GPG signature in the recipe.
-
-Prolewatch installs four unprivileged binaries and its policy file.
+Prolewatch supports x86-64 Arch Linux. It installs four unprivileged binaries
+and its policy file.
 
 ### 1. Install the package
 
-#### Signed AUR release
-
-The `v0.12.2` GitHub prerelease publishes these separate assets:
-
-- `prolewatch-0.12.2.tar.gz`
-- `prolewatch-0.12.2.tar.gz.sig`
-- `prolewatch-release-key.asc`
-
-The automatic GitHub "Source code" downloads and the workflow-built binary
-archive are different files and cannot replace the signed source archive.
-
-The full release-key fingerprint is:
-
-```text
-296E983E7120909958BD38E557F1F87148E02B27
-```
-
-Download the public key from the release, inspect its full
-fingerprint, compare it with both documents through a separate path, and import
-it as the normal build user:
+Import the Prolewatch release key once. Confirm that `gpg` shows fingerprint
+`296E 983E 7120 9099 58BD 38E5 57F1 F871 48E0 2B27` before importing it:
 
 ```bash
 curl --fail --location --remote-name \
   https://github.com/holgerjh/prolewatch/releases/download/v0.12.2/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
+```
+
+Install Prolewatch with `yay`:
+
+```bash
 yay -S prolewatch
 ```
 
-No `pacman-key` import or GPG ownertrust change is needed. The recipe's
-`validpgpkeys` entry requires the exact release fingerprint when `makepkg`
-checks the detached source signature. Importing the public key only makes that
-verification possible; comparing the fingerprint is the identity check.
+The AUR recipe downloads the signed release source and verifies it against the
+pinned fingerprint. Your regular GPG keyring provides this verification. The
+pacman keyring and ownertrust remain unchanged. See
+[Release distribution and verification](SECURITY.md#release-distribution-and-verification)
+for the complete trust path.
 
-#### Development installation from a reviewed checkout
-
-The build produces an ordinary Arch package, which you sign with a key you
-generate yourself. That signature authenticates *your own build artifact* to
-`pacman`. It says nothing about the source it was built from. Install the source
-checkout prerequisites first:
-
-```bash
-sudo pacman -Syu --needed base-devel git go
-```
-
-Run as the normal `yay` user, from an interactive shell:
-
-```bash
-make dev-install
-```
-
-The command creates the signing key if there is not one, builds
-and signs the package, verifies that signature directly against the private
-development key home, checks the installed-file allow-list, and gives only the
-final `pacman -U` invocation that key home. Re-running reuses the existing key,
-so it is also how you rebuild after a change. The default path modifies neither
-the system pacman keyring nor `/etc/pacman.conf`.
-
-Stock Arch uses `LocalFileSigLevel = Optional`. That does not make the direct
-verification above optional: `dev-install` performs it before installation and
-stops on a bad signature. Administrators may still opt into the system-wide
-`Required TrustedOnly` policy with `PROLEWATCH_SET_PACMAN_SIGLEVEL=1`; the old
-configuration is kept as `/etc/pacman.conf.prolewatch-bak`. Be aware that this
-policy rejects unsigned local packages, including normal `makepkg` output, so
-ordinary AUR installs fail until it is relaxed again.
-
-Prolewatch's own build is not protected by Prolewatch. It is installed before
-any of its controls exist. On the AUR path, the release signature authenticates
-the source for that bootstrap build; on the development path, the local
-signature authenticates only the package you built. Neither signature contains
-the build. Containment begins with the next AUR transaction.
-
-<details>
-<summary><strong>Doing it by hand instead</strong></summary>
-
-The individual build, signature-verification, and installation steps are below.
-
-Create the signing key once. `tty` must print a device path, not
-`not a tty`. Use `pinentry-tty` rather than `pinentry-curses`: the curses dialog
-needs a minimum terminal size and fails with "Screen or window too small" on a
-small window or a serial console.
-
-```bash
-dev_key_dir="${XDG_DATA_HOME:-$HOME/.local/share}/prolewatch/dev-signing-gnupg"
-install -d -m 0700 "$dev_key_dir"
-printf '%s\n' 'pinentry-program /usr/bin/pinentry-tty' \
-  > "$dev_key_dir/gpg-agent.conf"
-chmod 0600 "$dev_key_dir/gpg-agent.conf"
-export GPG_TTY="$(tty)"
-gpgconf --homedir "$dev_key_dir" --kill gpg-agent
-gpg --homedir "$dev_key_dir" \
-  --quick-generate-key "Prolewatch local development package" ed25519 sign 1y
-fingerprint="$(gpg --homedir "$dev_key_dir" --with-colons --list-secret-keys \
-  | awk -F: '/^fpr:/{print $10; exit}')"
-printf '%s\n' "$fingerprint" > "$dev_key_dir/fingerprint"
-gpg --homedir "$dev_key_dir" --armor --export "$fingerprint" \
-  > "$dev_key_dir/public-key.asc"
-```
-
-Then build, verify, and install. Verification uses the development key home
-directly and does not depend on pacman's global local-file policy:
-
-```bash
-make release-check
-make arch-package
-make verify-arch-package PACKAGE=/absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
-sudo pacman --gpgdir "$dev_key_dir" -U -- /absolute/path/to/prolewatch-dev-VERSION-x86_64.pkg.tar.zst
-```
-
-Use the exact `prolewatch-dev-*.pkg.tar.zst` path printed by `make arch-package`.
-`verify-arch-package` verifies the detached signature and checks the built
-package against an allow-list of installed files. Installation modifies neither
-the pacman keyring nor `LocalFileSigLevel`.
-The package provides `prolewatch` and will conflict cleanly with a future release
-package.
-
-</details>
+Building Prolewatch from a checkout is documented in the
+[development workflow](CONTRIBUTING.md#development-workflow). Prolewatch's own
+bootstrap build runs before its controls exist. Containment starts with the
+next AUR transaction.
 
 ### 2. Check the session prerequisites
 
@@ -427,6 +329,12 @@ existing `config.json` files are ignored. Edit the YAML file and run
 `prolewatch config-check` before relying on the new package.
 `prolewatch install-hook` is available when only the lower-level hook step is
 wanted.
+
+Now install AUR packages as usual. Prolewatch intercepts their builds:
+
+```bash
+yay -S <package>
+```
 
 ### 4. Turn on AI review
 
