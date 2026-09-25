@@ -33,9 +33,9 @@ service account, `sudoers` entry, or setuid binary. The optional local Ollama
 pilot can use a daemon you separately install and operate as part of your local
 trusted computing base.
 
-**Experimental AUR release — 0.12.3**
+**Experimental AUR release — 0.12.4**
 
-`0.12.3` is the current release line for x86-64 Arch Linux. It is distributed
+`0.12.4` is the current release line for x86-64 Arch Linux. It is distributed
 as [`prolewatch`](https://aur.archlinux.org/packages/prolewatch) after its signed
 source archive passes the disposable-system acceptance run and real yay
 interception. Check the AUR page for the version currently available.
@@ -203,7 +203,7 @@ Import the Prolewatch release key once. Confirm that `gpg` shows fingerprint
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/holgerjh/prolewatch/releases/download/v0.12.3/prolewatch-release-key.asc
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.4/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
 ```

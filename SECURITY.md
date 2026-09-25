@@ -9,7 +9,7 @@ especially important.
 
 ## Supported versions
 
-`0.12.3` is the current experimental release line for x86-64 Arch Linux. It is
+`0.12.4` is the current experimental release line for x86-64 Arch Linux. It is
 distributed as [`prolewatch`](https://aur.archlinux.org/packages/prolewatch).
 Security fixes are made against the current default branch; older checkouts may
 no longer match the documented security boundary, though reports remain useful
@@ -24,8 +24,8 @@ for reviewed checkouts.
 
 ### Signed AUR source path
 
-The `0.12.3` release uses `prolewatch-0.12.3.tar.gz`, its detached `.sig`, and
-`prolewatch-release-key.asc` from the `v0.12.3` GitHub prerelease.
+The `0.12.4` release uses `prolewatch-0.12.4.tar.gz`, its detached `.sig`, and
+`prolewatch-release-key.asc` from the `v0.12.4` GitHub prerelease.
 The source archive is deterministic and includes vendored Go dependencies. The
 AUR recipe fetches those exact assets, checks the archive SHA-256, and pins the
 signing key through `validpgpkeys`.
@@ -42,7 +42,7 @@ it into the normal build user's keyring:
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/holgerjh/prolewatch/releases/download/v0.12.3/prolewatch-release-key.asc
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.4/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
 ```
@@ -97,8 +97,8 @@ currently guaranteed.
 
 ## Open findings
 
-- Assessment date: 2026-09-25
-- Applies to: `0.12.3`
+- Assessment date: 2026-09-26
+- Applies to: `0.12.4`
 
 Prolewatch installs no privileged component: no daemon, socket, service
 account, `sudoers` entry, or setuid binary.

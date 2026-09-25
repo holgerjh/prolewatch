@@ -21,8 +21,8 @@ usr/share/prolewatch/review-prompt.md
 usr/share/prolewatch/verdict.schema.json
 etc/prolewatch/config.yaml
 usr/share/doc/prolewatch/docs/ai-review.md
-usr/share/man/man1/prolewatch.1
-usr/share/man/man5/prolewatch-config.5
+usr/share/man/man1/prolewatch.1.gz
+usr/share/man/man5/prolewatch-config.5.gz
 `
 
 type packageScriptFixture struct {
