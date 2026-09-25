@@ -9,8 +9,8 @@ especially important.
 
 ## Supported versions
 
-`0.12.2` is the first public experimental release for x86-64 Arch Linux. It is
-available as [`prolewatch`](https://aur.archlinux.org/packages/prolewatch).
+`0.12.3` is the current experimental release line for x86-64 Arch Linux. It is
+distributed as [`prolewatch`](https://aur.archlinux.org/packages/prolewatch).
 Security fixes are made against the current default branch; older checkouts may
 no longer match the documented security boundary, though reports remain useful
 when the behavior also reproduces on current code.
@@ -24,8 +24,8 @@ for reviewed checkouts.
 
 ### Signed AUR source path
 
-The `0.12.2` release publishes `prolewatch-0.12.2.tar.gz`, its detached `.sig`,
-and `prolewatch-release-key.asc` on the `v0.12.2` GitHub prerelease.
+The `0.12.3` release uses `prolewatch-0.12.3.tar.gz`, its detached `.sig`, and
+`prolewatch-release-key.asc` from the `v0.12.3` GitHub prerelease.
 The source archive is deterministic and includes vendored Go dependencies. The
 AUR recipe fetches those exact assets, checks the archive SHA-256, and pins the
 signing key through `validpgpkeys`.
@@ -42,7 +42,7 @@ it into the normal build user's keyring:
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/holgerjh/prolewatch/releases/download/v0.12.2/prolewatch-release-key.asc
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.3/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
 ```
@@ -98,14 +98,13 @@ currently guaranteed.
 ## Open findings
 
 - Assessment date: 2026-09-25
-- Release commit: `88108e27ac8e00346865996d2dbb35019f388332`
-- Applies to: `0.12.2`, the first public experimental release
+- Applies to: `0.12.3`
 
 Prolewatch installs no privileged component: no daemon, socket, service
 account, `sudoers` entry, or setuid binary.
 
-Configuration compatibility starts with the first public release. The current
-`0.12.2` prerelease tree intentionally carries no migration parser or legacy
+Configuration compatibility starts with the first public release. The `0.12.x`
+release line intentionally carries no migration parser or legacy
 hook namespace; an obsolete local configuration fails strict validation and
 should be replaced with the shipped default.
 

@@ -1,0 +1,135 @@
+.TH PROLEWATCH 1 "September 2026" "Prolewatch" "User Commands"
+.SH NAME
+prolewatch \- contain and inspect AUR builds driven by yay
+.SH SYNOPSIS
+.B prolewatch
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+Prolewatch connects to yay through its Lua configuration. It inspects the AUR
+recipe, fetched sources, and built package. Package-controlled build code runs
+in a Bubblewrap sandbox with a temporary home, private namespaces, brokered
+network access, and systemd resource limits.
+.PP
+Before pacman receives the package, Prolewatch displays known privileged
+integration such as install scriptlets, pacman hooks, and udev rules.
+.SH FIRST USE
+After installing the package, run:
+.PP
+.EX
+prolewatch setup
+.EE
+.PP
+Setup checks the installed files, configuration, sandbox, user manager,
+subordinate IDs, and supported yay integration. It installs the yay hook only
+after the required checks pass.
+.PP
+Subsequent AUR transactions use the normal yay command:
+.PP
+.EX
+yay -S package
+.EE
+.SH COMMANDS
+.TP
+.B setup
+Run the required health checks and activate the yay integration for the current
+user.
+.TP
+.B doctor
+Check the installation, configuration, containment, and active review provider.
+Use
+.B --no-probe
+to skip a live provider request or
+.B --json
+for machine-readable output.
+.TP
+.B inspect " REPORT_ID"
+Open every stored finding with source context. Use
+.B --latest
+instead of a report ID to inspect the newest report.
+.TP
+.B report " REPORT_ID"
+Print a stored report. The
+.B --latest
+option selects the newest report.
+.TP
+.B approve " REPORT_ID"
+Create a one-time approval for an eligible report. Structural failures remain
+ineligible.
+.TP
+.B config-check
+Validate the configuration. Use
+.BI --path " FILE"
+to check another file.
+.TP
+.B llm-benchmark
+Benchmark the configured review provider. Provider setup and benchmark options
+are documented in the installed AI review guide.
+.TP
+.B install-hook
+Install only the yay hook. Normal installations should use
+.B setup
+so the complete preflight runs first.
+.TP
+.B uninstall-hook
+Remove Prolewatch's managed block from yay's configuration. Unrelated yay
+configuration and backups remain in place.
+.TP
+.B scan
+Run a recipe, source, or artifact scan. The yay hook and wrapper commands supply
+the required transaction context during normal use.
+.TP
+.B security-scenarios
+Run the installed deterministic security scenario corpus.
+.TP
+.B version
+Print the installed version.
+.SH FILES
+.TP
+.I /etc/prolewatch/config.yaml
+System policy and provider configuration. Pacman preserves local edits during
+upgrades.
+.TP
+.I ~/.config/yay/init.lua
+Contains a clearly marked block that loads the Prolewatch integration.
+.TP
+.I ~/.config/yay/prolewatch.lua
+The managed yay hook module.
+.TP
+.I ~/.local/state/prolewatch/
+Reports, build logs, approvals, quarantine data, and provider attestations.
+The XDG state directory is used when configured.
+.SH EXIT STATUS
+.TP
+.B 0
+The command completed successfully or policy allowed the scanned input.
+.TP
+.B 10
+Policy blocked the input.
+.TP
+.B 20
+The command line or configuration is invalid.
+.TP
+.B 21
+Inspection failed.
+.TP
+.B 22
+Required review or health checks are unavailable.
+.TP
+.B 23
+Persistent state or integration failed.
+.TP
+.B 24
+Contained execution failed.
+.TP
+.B 25
+Artifact validation failed.
+.SH SECURITY MODEL
+The sandbox shares the host kernel. The final package installation remains a
+sudo pacman transaction. Prolewatch reviews builds and package integration; it
+does not monitor installed programs at runtime.
+.SH SEE ALSO
+.BR prolewatch-config (5),
+.BR yay (8),
+.BR makepkg (8),
+.BR pacman (8)

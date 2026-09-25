@@ -86,6 +86,18 @@ func TestArchPackageInstallsLinkedAIReviewGuide(t *testing.T) {
 	}
 }
 
+func TestArchPackageInstallsManualPages(t *testing.T) {
+	installed := packagedPaths(t, archRecipe(t))
+	for _, page := range []string{
+		"/usr/share/man/man1/prolewatch.1",
+		"/usr/share/man/man5/prolewatch-config.5",
+	} {
+		if !installed[page] {
+			t.Errorf("the Arch package does not install %s", page)
+		}
+	}
+}
+
 // TestSystemConfigurationIsAPacmanBackupFile keeps an administrator's edits
 // from being replaced on upgrade. A configuration pacman owns without a backup
 // entry is overwritten, which silently reverts a deliberate policy change.

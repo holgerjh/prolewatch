@@ -18,7 +18,7 @@ import (
 const (
 	// Schema/behavior versions participate in stored evidence and policy
 	// identity. Increment the relevant value when its interpretation changes.
-	ApplicationVersion    = "0.12.2"
+	ApplicationVersion    = "0.12.3"
 	ReportSchemaVersion   = 16
 	MarkerSchemaVersion   = 8
 	ApprovalSchemaVersion = 7

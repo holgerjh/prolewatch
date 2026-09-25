@@ -57,6 +57,7 @@ allowed=${metadata}/allowed
   printf '%s\n' etc/prolewatch/config.yaml
   printf 'usr/share/doc/prolewatch/%s\n' README.md SECURITY.md architecture.md
   printf '%s\n' usr/share/doc/prolewatch/docs/ai-review.md
+  printf '%s\n' usr/share/man/man1/prolewatch.1 usr/share/man/man5/prolewatch-config.5
   printf 'usr/share/licenses/prolewatch/%s\n' LICENSE THIRD_PARTY_NOTICES
 } | sort >"${allowed}"
 
@@ -101,6 +102,8 @@ usr/share/prolewatch/review-prompt.md
 usr/share/prolewatch/verdict.schema.json
 etc/prolewatch/config.yaml
 usr/share/doc/prolewatch/docs/ai-review.md
+usr/share/man/man1/prolewatch.1
+usr/share/man/man5/prolewatch-config.5
 REQUIRED
 
 policy=$(pacman-conf LocalFileSigLevel 2>/dev/null || true)

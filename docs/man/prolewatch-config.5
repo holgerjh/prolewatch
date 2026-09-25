@@ -1,0 +1,88 @@
+.TH PROLEWATCH-CONFIG 5 "September 2026" "Prolewatch" "File Formats"
+.SH NAME
+prolewatch-config \- Prolewatch policy and provider configuration
+.SH SYNOPSIS
+.I /etc/prolewatch/config.yaml
+.SH DESCRIPTION
+The configuration is a YAML mapping. Prolewatch validates the complete file
+before using it. Unknown fields, invalid values, and unsafe combinations stop
+the command.
+.PP
+Validate edits with:
+.PP
+.EX
+prolewatch config-check
+.EE
+.PP
+The installed file contains comments for every field and is the full reference
+for the running version.
+.SH TOP-LEVEL FIELDS
+.TP
+.B provider
+Selects the AI backend:
+.BR codex ,
+.BR anthropic ,
+or
+.BR ollama .
+The provider is inactive while review mode is deterministic-only.
+.TP
+.B providers
+Contains backend-specific model, effort, timeout, context, reasoning, and
+residency settings.
+.TP
+.B review
+Controls deterministic-only or AI mode, AI phases, decision thresholds,
+confidence, batching, and provider time limits. Deterministic inspection runs
+at every gate.
+.TP
+.B limits
+Bounds scan input, archives, selected text, findings, and scan duration.
+Coverage that exceeds a required limit blocks approval.
+.TP
+.B build
+Defines memory, CPU, task, runtime, workspace, output, and disk-reserve limits
+for contained package code.
+.TP
+.B network
+Defines interactive broker limits. Public HTTP and HTTPS destinations require
+approval for the current build phase.
+.TP
+.B vendor
+Sets semantic scan depth for vendored dependency trees. All bytes remain part
+of content binding at every depth.
+.TP
+.B terminal
+Selects branded or plain terminal output. It does not alter policy decisions.
+.SH AI REVIEW
+The default mode is
+.BR deterministic-only .
+When AI review is enabled, its findings supplement the deterministic scanner.
+They cannot clear deterministic findings.
+.PP
+An Ollama configuration requires a current quality attestation. Create or renew
+it with:
+.PP
+.EX
+prolewatch doctor --probe-llm-quality
+.EE
+.PP
+Codex and Anthropic provider checks use:
+.PP
+.EX
+prolewatch doctor
+.EE
+.SH FILES
+.TP
+.I /etc/prolewatch/config.yaml
+Active configuration. It is installed as a pacman backup file, so package
+upgrades preserve administrator edits.
+.TP
+.I /usr/share/prolewatch/default-config.yaml
+Complete packaged default for comparison and recovery.
+.TP
+.I /usr/share/doc/prolewatch/docs/ai-review.md
+Provider setup, local model measurements, and tuning guidance.
+.SH SEE ALSO
+.BR prolewatch (1),
+.BR yay (8),
+.BR makepkg (8)
