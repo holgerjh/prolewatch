@@ -112,7 +112,7 @@ Publish and test in this order, because the recipe names the archive by URL:
      the signed files;
   3. on a clean Arch system, copy only PKGBUILD and .SRCINFO, import the public
      key after comparing its fingerprint, then run 'makepkg --verifysource',
-     'makepkg -si', 'prolewatch doctor --no-probe', 'prolewatch setup', and the
+     'makepkg -si', 'prolewatch setup', 'prolewatch doctor --no-probe', and the
      acceptance probes from a checkout of the same tag;
   4. only after that acceptance run passes, push PKGBUILD and .SRCINFO to the
      AUR repository.
