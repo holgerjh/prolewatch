@@ -57,4 +57,9 @@ GOOS=linux GOARCH=amd64 PROLEWATCH_BUILD_DIR="${check_tmp}/build" ./scripts/buil
 test "$(<"${check_tmp}/build/.source-fingerprint")" = "$(./scripts/source-fingerprint.sh)"
 ./scripts/generate-sbom.sh amd64 "${check_tmp}/build" "${check_tmp}/sbom"
 test "$(find "${check_tmp}/sbom" -maxdepth 1 -type f -name '*.cdx.json' | wc -l)" -eq 4
+for sbom in "${check_tmp}"/sbom/*.cdx.json; do
+  grep -q '"bomFormat": "CycloneDX"' "${sbom}"
+  grep -q '"specVersion": "1.6"' "${sbom}"
+  grep -Eq '"serialNumber": "urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}"' "${sbom}"
+done
 printf 'Release checks passed; internal coverage: %s%%\n' "${coverage}"

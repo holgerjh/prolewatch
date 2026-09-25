@@ -9,7 +9,7 @@ especially important.
 
 ## Supported versions
 
-The current tree targets `0.12.1` as the first public experimental release for
+The current tree targets `0.12.2` as the first public experimental release for
 x86-64 Arch Linux. AUR publication is pending its signed-source acceptance run.
 Security fixes are made against the current default branch; older checkouts may
 no longer match the documented security boundary, though reports remain useful
@@ -25,8 +25,8 @@ origin or safety.
 
 ### Signed AUR source path
 
-The `0.12.1` release will publish `prolewatch-0.12.1.tar.gz`, its detached
-`.sig`, and `prolewatch-release-key.asc` on the `v0.12.1` GitHub prerelease.
+The `0.12.2` release will publish `prolewatch-0.12.2.tar.gz`, its detached
+`.sig`, and `prolewatch-release-key.asc` on the `v0.12.2` GitHub prerelease.
 The source archive is deterministic and includes vendored Go dependencies. The
 AUR recipe fetches those exact assets, checks the archive SHA-256, and pins the
 signing key through `validpgpkeys`.
@@ -43,7 +43,7 @@ it into the normal build user's keyring:
 
 ```bash
 curl --fail --location --remote-name \
-  https://github.com/holgerjh/prolewatch/releases/download/v0.12.1/prolewatch-release-key.asc
+  https://github.com/holgerjh/prolewatch/releases/download/v0.12.2/prolewatch-release-key.asc
 gpg --show-keys --with-fingerprint prolewatch-release-key.asc
 gpg --import prolewatch-release-key.asc
 ```
@@ -100,13 +100,13 @@ currently guaranteed.
 
 - Assessment date: 2026-09-10
 - Release-candidate commit: pending selection after the concurrent release work
-- Applies to: the tree targeting `0.12.1` as the first public experimental release
+- Applies to: the tree targeting `0.12.2` as the first public experimental release
 
 Prolewatch installs no privileged component: no daemon, socket, service
 account, `sudoers` entry, or setuid binary.
 
 Configuration compatibility starts with the first public release. The current
-`0.12.1` prerelease tree intentionally carries no migration parser or legacy
+`0.12.2` prerelease tree intentionally carries no migration parser or legacy
 hook namespace; an obsolete local configuration fails strict validation and
 should be replaced with the shipped default.
 
