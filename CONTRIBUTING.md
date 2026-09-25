@@ -112,6 +112,29 @@ which requires a real PAM login — `docker exec` does not create one — and
 login gets both for nothing, and an acceptance record from a container you had
 to grant extra privileges to is weaker evidence than one from a plain VM.
 
+From a Linux host with QEMU/KVM, OpenSSH, curl, and rsync installed, the whole
+procedure below can be driven with one command:
+
+```bash
+make acceptance-vm
+```
+
+The script asks for the basic image's `arch` password when it opens the first
+SSH connection and leaves security prompts interactive. It keeps the VM
+running after the tests so its reports can be inspected. Shut it down or reset
+the disposable overlay with:
+
+```bash
+./scripts/acceptance-vm.sh stop
+./scripts/acceptance-vm.sh reset
+```
+
+Set `PROLEWATCH_ACCEPTANCE_VM_DIR`, `PROLEWATCH_ACCEPTANCE_IMAGE_URL`,
+`PROLEWATCH_ACCEPTANCE_SSH_PORT`, `PROLEWATCH_ACCEPTANCE_VM_MEMORY`, or
+`PROLEWATCH_ACCEPTANCE_VM_CPUS` to change the corresponding defaults. The
+manual procedure follows for troubleshooting and for release records assembled
+step by step.
+
 ### VM setup
 
 Use the **basic** image, not the cloud image: it ships with the user `arch`
@@ -122,7 +145,7 @@ image, and no `cloud-localds`.
 curl -LO https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-basic.qcow2
 
 # Use an overlay so the test system can be reset without changing the base image.
-qemu-img create -f qcow2 -F qcow2 -b Arch-Linux-x86_64-basic.qcow2 pw.qcow2 20G
+qemu-img create -f qcow2 -F qcow2 -b Arch-Linux-x86_64-basic.qcow2 pw.qcow2
 
 qemu-system-x86_64 -enable-kvm -m 8G -smp 4 \
   -drive file=pw.qcow2,if=virtio \
@@ -183,8 +206,8 @@ rsync is not installed on both ends.
 ```bash
 cd ~/prolewatch
 make dev-install
-prolewatch doctor          # renews the provider attestation; --no-probe skips the request
 prolewatch setup
+prolewatch doctor          # renews the provider attestation; --no-probe skips the request
 make acceptance-probes
 ```
 

@@ -1,4 +1,4 @@
-.PHONY: build test vet check-layering probes acceptance-probes security-test scenarios installed-scenarios release-check release-aur dev-install arch-package arch-package-clean verify-arch-package clean
+.PHONY: build test vet check-layering probes acceptance-probes acceptance-vm security-test scenarios installed-scenarios release-check release-aur dev-install arch-package arch-package-clean verify-arch-package clean
 
 build:
 	./scripts/build.sh
@@ -19,6 +19,10 @@ probes:
 # Arch system where Prolewatch is installed, not in a source tree.
 acceptance-probes:
 	PROLEWATCH_PROBE_STRICT=1 ./scripts/run-probes.sh
+
+# Creates and drives the disposable Arch VM used for installed acceptance.
+acceptance-vm:
+	./scripts/acceptance-vm.sh
 
 security-test:
 	go test -race ./internal/audit

@@ -100,8 +100,8 @@ cat <<EOF
 Next, from a login session with a systemd user manager - a normal TTY, desktop,
 or SSH login, not su or sudo -iu:
 
-  prolewatch doctor --no-probe
   prolewatch setup
+  prolewatch doctor --no-probe
 
 'prolewatch doctor' without --no-probe additionally spends a hosted-provider
 request and renews its attestation. Ollama's longer local assessment is explicit:
